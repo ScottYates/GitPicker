@@ -100,6 +100,7 @@ const (
 	phaseFiles
 	phaseMessage
 	phasePushConfirm
+	phaseError
 )
 
 // fetchResult is what the background fetch reports back.
@@ -210,6 +211,12 @@ type model struct {
 
 	// pushChoice is the yes or no answer to the push question.
 	pushChoice int
+
+	// fatal is the failure that ends the picker, if there is one.
+	//
+	// It is set when a git command the user asked for fails. The picker
+	// shows it and then exits with the exit code git gave.
+	fatal *GitError
 
 	// pulling is true while a background pull is running.
 	pulling bool
@@ -355,9 +362,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case switchDoneMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.status = "error: " + firstLine(msg.err.Error())
-			m.statusErr = true
-			return m, nil
+			return m.fail(msg.err)
 		}
 		// The picker stays open, so the list and the current branch marker
 		// have to catch up with what git just did.
@@ -389,20 +394,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pullDoneMsg:
 		m.pulling = false
 		if msg.err != nil {
-			m.status = fmt.Sprintf("pull of %s failed: %s", msg.branch, firstLine(msg.err.Error()))
-			m.statusErr = true
-		} else {
-			m.status = fmt.Sprintf("Pulled %s (%.1fs)", msg.branch, time.Since(m.pullStarted).Seconds())
-			m.statusErr = false
+			return m.fail(msg.err)
 		}
+		m.status = fmt.Sprintf("Pulled %s (%.1fs)", msg.branch, time.Since(m.pullStarted).Seconds())
+		m.statusErr = false
 		return m.resumePending()
 
 	case filesLoadedMsg:
 		if msg.err != nil {
-			m.phase = phaseList
-			m.status = "error: " + firstLine(msg.err.Error())
-			m.statusErr = true
-			return m, nil
+			return m.fail(msg.err)
 		}
 		if len(msg.files) == 0 {
 			m.phase = phaseList
@@ -422,9 +422,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case commitDoneMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.status = "commit failed: " + firstLine(msg.err.Error())
-			m.statusErr = true
-			return m.resumePending()
+			return m.fail(msg.err)
 		}
 		m.status = fmt.Sprintf("Committed %s (%d file%s)", msg.message, msg.files, plural(msg.files))
 		m.statusErr = false
@@ -437,12 +435,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pushDoneMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.status = "push failed: " + firstLine(msg.err.Error())
-			m.statusErr = true
-		} else {
-			m.status = "Pushed " + m.current
-			m.statusErr = false
+			return m.fail(msg.err)
 		}
+		m.status = "Pushed " + m.current
+		m.statusErr = false
 		return m.resumePending()
 
 	case tea.KeyMsg:
@@ -468,6 +464,32 @@ func plural(count int) string {
 		return ""
 	}
 	return "s"
+}
+
+// fail records a failure that ends the picker.
+//
+// The picker shows the error in full and waits for a key, and then it exits
+// with the exit code git gave. The action that was held back is dropped,
+// because the picker is on its way out.
+func (m model) fail(err error) (tea.Model, tea.Cmd) {
+	m.fatal = fatalError(err)
+	m.phase = phaseError
+	m.busy = false
+	m.pulling = false
+	m.pending = nil
+	return m, nil
+}
+
+// fatalError turns an error into the GitError the picker exits with.
+//
+// A git failure carries its own exit code, which is what the process should
+// end with. Anything else is a fault in the picker itself, so it exits 1.
+func fatalError(err error) *GitError {
+	if gitErr, ok := err.(*GitError); ok {
+		return gitErr
+	}
+	message := err.Error()
+	return &GitError{Code: 1, Message: message, Detail: message}
 }
 
 // resumePending starts the action that was held back, if there is one.
@@ -753,8 +775,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleMessageKey(msg)
 	case phasePushConfirm:
 		return m.handlePushConfirmKey(msg)
+	case phaseError:
+		return m.handleErrorKey(msg)
 	}
 	return m.handleListKey(msg)
+}
+
+// handleErrorKey quits the picker when a key is pressed on the error panel.
+//
+// The error is already on screen in full, and the same text goes to stderr
+// when the program exits, so there is nothing left to wait for.
+func (m model) handleErrorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	return m, tea.Quit
 }
 
 // handleListKey acts on a key press in the branch list.
@@ -1208,6 +1240,8 @@ func (m model) View() string {
 		return m.viewMessage()
 	case phasePushConfirm:
 		return m.viewPushConfirm()
+	case phaseError:
+		return m.viewError()
 	}
 	return m.viewList()
 }
@@ -1247,6 +1281,112 @@ func (m model) upstreamFor(name string) string {
 		}
 	}
 	return ""
+}
+
+// viewError draws a fatal error in full.
+//
+// The same text is written to stderr when the program exits, so this is for
+// reading rather than for catching.
+func (m model) viewError() string {
+	var b strings.Builder
+
+	head := "git failed"
+	if m.fatal != nil {
+		head = m.fatal.Message
+	}
+	if m.repoName != "" {
+		head = m.repoName + "  " + head
+	}
+	b.WriteString(styleError.Render("! "+head) + "\n\n")
+
+	width := m.width
+	if width < minPanelWidth {
+		width = minPanelWidth
+	}
+
+	rule := "+-- "
+	title := "error"
+	tail := width - displayWidth(rule) - displayWidth(title) - 1
+	if tail < 0 {
+		tail = 0
+	}
+	b.WriteString(styleBorder.Render(rule) + styleTitle.Render(title) + styleBorder.Render(" "+strings.Repeat("-", tail)) + "\n")
+
+	for _, line := range m.errorLines(width - 2) {
+		b.WriteString(styleBorder.Render("| ") + padToWidth(line, width-2) + "\n")
+	}
+	b.WriteString(styleBorder.Render("+-"+strings.Repeat("-", width-2)) + "\n")
+
+	b.WriteString(styleInfo.Render("press any key to exit"))
+	return b.String()
+}
+
+// errorLines are the lines the error panel holds.
+//
+// A long line is wrapped rather than cut, so the whole error is on screen.
+// If there is more of it than the screen can take, the rest is left out here
+// and is on stderr when the program exits.
+func (m model) errorLines(width int) []string {
+	if width < 8 {
+		width = 8
+	}
+
+	detail := ""
+	if m.fatal != nil {
+		detail = m.fatal.Detail
+	}
+	if detail == "" {
+		detail = "no further detail"
+	}
+
+	var lines []string
+	for _, line := range strings.Split(detail, "\n") {
+		lines = append(lines, wrapText(line, width)...)
+	}
+
+	// The panel needs room for its own rules and the instruction below it.
+	room := m.height - 5
+	if m.height <= 0 {
+		room = 20
+	}
+	if room < 1 {
+		room = 1
+	}
+	if len(lines) > room {
+		// The note about the rest takes the last line of the room.
+		hidden := len(lines) - (room - 1)
+		lines = lines[:room-1]
+		lines = append(lines, fmt.Sprintf("... %d more lines, see the terminal", hidden))
+	}
+	return lines
+}
+
+// wrapText breaks a line into pieces that fit the width.
+//
+// The cut is on cell boundaries rather than on word boundaries, so the
+// indented output git writes keeps its shape.
+func wrapText(text string, width int) []string {
+	if displayWidth(text) <= width {
+		return []string{text}
+	}
+
+	var lines []string
+	var current strings.Builder
+	used := 0
+	for _, r := range text {
+		size := runeWidth(r)
+		if used+size > width {
+			lines = append(lines, current.String())
+			current.Reset()
+			used = 0
+		}
+		current.WriteRune(r)
+		used += size
+	}
+	if current.Len() > 0 {
+		lines = append(lines, current.String())
+	}
+	return lines
 }
 
 // viewList draws the branch list.

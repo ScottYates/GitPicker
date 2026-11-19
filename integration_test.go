@@ -321,6 +321,62 @@ func TestAnsweringYesPushesTheCommitToTheRemote(t *testing.T) {
 	}
 }
 
+func TestThePickerEndsWithGitsExitCodeWhenAPullFails(t *testing.T) {
+	withHome(t)
+
+	repo, _ := makeTestRepoWithRemote(t)
+	// The remote is gone, so the pull cannot work. The branch still tracks
+	// it, so the picker tries anyway.
+	runGitIn(t, repo, "remote", "set-url", "origin", "C:/nonexistent/nowhere")
+
+	output, input, results, failures := runPicker(t, repo)
+	defer input.Close()
+
+	time.Sleep(400 * time.Millisecond)
+
+	// Enter switches to the highlighted branch and pulls it.
+	if _, err := input.Write([]byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The failure is shown in full, and the picker waits.
+	waitFor(t, "the error to be shown", func() bool {
+		return strings.Contains(output.String(), "git pull failed")
+	})
+	waitFor(t, "the error panel", func() bool {
+		return strings.Contains(output.String(), "press any key to exit")
+	})
+
+	// A key leaves, and the picker ends by itself rather than sitting
+	// there with an error on screen.
+	if _, err := input.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+
+	var final tea.Model
+	select {
+	case final = <-results:
+	case err := <-failures:
+		t.Fatalf("the picker failed: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the picker did not end after the failure")
+	}
+
+	m, ok := final.(model)
+	if !ok {
+		t.Fatalf("unexpected final model %T", final)
+	}
+	if m.fatal == nil {
+		t.Fatal("the failure should have been recorded")
+	}
+	if m.fatal.Code == 0 {
+		t.Fatal("the exit code should have been kept")
+	}
+	if !strings.Contains(m.fatal.Detail, "does not appear to be a git repository") {
+		t.Fatalf("the whole error should be kept:\n%s", m.fatal.Detail)
+	}
+}
+
 func TestPickerCreatesABranchAndStaysOpen(t *testing.T) {
 	repo := makeTestRepo(t)
 	output, input, results, failures := runPicker(t, repo)

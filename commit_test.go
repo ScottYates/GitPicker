@@ -311,8 +311,12 @@ func TestAFailedCommitDoesNotAskAboutThePush(t *testing.T) {
 	next, _ := m.Update(commitDoneMsg{message: "a message", err: os.ErrInvalid})
 	m = next.(model)
 
-	if m.phase != phaseList {
-		t.Fatalf("a failed commit should not offer a push, got phase %d", m.phase)
+	if m.phase == phasePushConfirm {
+		t.Fatal("a failed commit should not offer a push")
+	}
+	// A failed commit is one of the failures that ends the picker.
+	if m.phase != phaseError {
+		t.Fatalf("a failed commit should end the picker, got phase %d", m.phase)
 	}
 }
 

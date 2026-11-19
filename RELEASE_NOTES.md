@@ -1,30 +1,57 @@
-## git-picker v1.4
+## git-picker v1.5
 
-Ask before pushing, so a commit goes out when you want it to.
+Failures are now reported in full, and the exit code says what went wrong.
 
-### The push question
+### A failure ends the picker
 
-After a successful commit the picker stops and asks:
+When a git command you asked for fails, the picker stops and shows the error
+in full:
 
 ```
-? repo  Push main to origin/main?
+! repo  git pull failed: fatal: Merge aborted
 
-> yes
-  no
++-- error --------------------------------
+| stdout:
+| Auto-merging file
+| CONFLICT (content): Merge conflict in file
+| stderr:
+| error: Automatic merge failed
++---------------------------------------
 
-y or n, enter to choose, esc to skip
+press any key to exit
 ```
 
-Answer `y` and the commit is pushed. Answer `n`, or press escape, and it is
-left where it is. The arrow keys move the pointer and enter takes the
-answer, so the question can be answered without the keyboard shortcuts.
+Any key leaves. The same text is written to the terminal afterwards, so
+nothing is lost either way.
 
-The question names the upstream when the branch has one. A branch with no
-upstream just says `Push main?`, and the push fails in the status line if
-git refuses it.
+Both streams are kept. Git splits the interesting part across them: a merge
+conflict writes the conflict lines to stdout and the failure to stderr, so
+either one on its own misses half of it.
 
-The picker stays open through all of it. Nothing closes until you press
-escape.
+### The exit code is git's
+
+A failure exits with the exit code git gave, so a script can tell a failed
+pull from a failed push:
+
+```
+git-picker; echo $?
+```
+
+| Exit code | What it means |
+| --- | --- |
+| 0 | the picker was used and left normally |
+| 1 | the picker could not work, or the folder is not a repository |
+| 128 | git failed, for example a merge conflict or a remote that is gone |
+| other | whatever git exited with |
+
+### A failed fetch does not end the picker
+
+The background fetch fails whenever the machine is offline, which is not
+worth closing the app over. It stays on the status line, and the picker
+carries on.
+
+A switch, a pull, a commit, a push or the file listing all end the picker
+when they fail, because those are the things you asked for.
 
 ### Keys
 

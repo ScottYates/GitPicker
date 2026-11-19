@@ -15,9 +15,15 @@ import (
 
 // GitError is a git command that failed. It carries git's own exit code so
 // the picker can exit with it.
+//
+// Message is the one line summary, and Detail is everything git said. Both
+// streams are kept, because git splits the interesting part across them: a
+// merge conflict writes the conflict lines to stdout and the failure itself
+// to stderr, so either one on its own misses half the story.
 type GitError struct {
 	Code    int
 	Message string
+	Detail  string
 }
 
 func (e *GitError) Error() string { return e.Message }
@@ -46,15 +52,45 @@ func runGit(args []string, cwd string) (string, string, int) {
 }
 
 // checkGit returns stdout, or a GitError carrying git's exit code.
+//
+// The summary is the first line of what git said, so it fits on the status
+// line, and the detail keeps every line of both streams so a failure can be
+// reported in full.
 func checkGit(stdout, stderr string, code int, action string) (string, error) {
-	if code != 0 {
-		detail := strings.TrimSpace(stderr)
-		if detail == "" {
-			detail = strings.TrimSpace(stdout)
-		}
-		return "", &GitError{Code: code, Message: fmt.Sprintf("git %s failed: %s", action, detail)}
+	if code == 0 {
+		return stdout, nil
 	}
-	return stdout, nil
+
+	summary := strings.TrimSpace(stderr)
+	if summary == "" {
+		summary = strings.TrimSpace(stdout)
+	}
+	message := fmt.Sprintf("git %s failed", action)
+	if summary != "" {
+		message += ": " + firstLine(summary)
+	}
+
+	return "", &GitError{
+		Code:    code,
+		Message: message,
+		Detail:  gitDetail(stdout, stderr),
+	}
+}
+
+// gitDetail is everything a failed git command said, labelled by the stream
+// it came from.
+//
+// A stream that said nothing is left out, so the detail reads as git wrote
+// it rather than as two empty sections.
+func gitDetail(stdout, stderr string) string {
+	var parts []string
+	if out := strings.TrimSpace(stdout); out != "" {
+		parts = append(parts, "stdout:\n"+out)
+	}
+	if err := strings.TrimSpace(stderr); err != "" {
+		parts = append(parts, "stderr:\n"+err)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // findRepoRoot walks upward from start until a .git entry is found.
