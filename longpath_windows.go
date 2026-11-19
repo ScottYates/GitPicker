@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	kernel32            = syscall.NewLazyDLL("kernel32.dll")
-	procGetLongPathName = kernel32.NewProc("GetLongPathNameW")
+	kernel32             = syscall.NewLazyDLL("kernel32.dll")
+	procGetLongPathName  = kernel32.NewProc("GetLongPathNameW")
+	procGetShortPathName = kernel32.NewProc("GetShortPathNameW")
 )
 
 // longPath expands a Windows 8.3 short path into its real long form.
@@ -43,6 +44,25 @@ func longPath(path string) string {
 	)
 	if written == 0 {
 		return path
+	}
+	return syscall.UTF16ToString(buf)
+}
+
+// shortPath is the 8.3 alias Windows gives a long folder name, and is what
+// the picker has to be able to expand again.
+func shortPath(path string) string {
+	handle, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return ""
+	}
+	buf := make([]uint16, 260)
+	written, _, _ := procGetShortPathName.Call(
+		uintptr(unsafe.Pointer(handle)),
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(len(buf)),
+	)
+	if written == 0 {
+		return ""
 	}
 	return syscall.UTF16ToString(buf)
 }

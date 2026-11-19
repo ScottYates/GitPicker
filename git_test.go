@@ -30,10 +30,10 @@ func TestBranchNameFromRef(t *testing.T) {
 
 func TestParseRefLine(t *testing.T) {
 	cases := []struct {
-		line     string
-		ref      string
+		line      string
+		ref       string
 		timestamp int64
-		upstream string
+		upstream  string
 	}{
 		{"refs/heads/master\t1700000000\torigin/master", "refs/heads/master", 1700000000, "origin/master"},
 		{"refs/heads/master\t1700000000\t", "refs/heads/master", 1700000000, ""},
@@ -88,12 +88,17 @@ func makeTestRepo(t *testing.T) string {
 func TestFindRepoRoot(t *testing.T) {
 	repo := makeTestRepo(t)
 
+	// The root comes back in its long form, because find_repo_root expands
+	// an 8.3 alias. On a machine where the temporary folder has an alias,
+	// such as a CI runner, the path handed in is the short one.
+	want := longPath(repo)
+
 	root, ok := findRepoRoot(repo)
 	if !ok {
 		t.Fatal("the repo root was not found")
 	}
-	if root != repo {
-		t.Fatalf("repo root: got %q, want %q", root, repo)
+	if root != want {
+		t.Fatalf("repo root: got %q, want %q", root, want)
 	}
 
 	// From a subdirectory it walks up to the root.
@@ -102,8 +107,8 @@ func TestFindRepoRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	root, ok = findRepoRoot(nested)
-	if !ok || root != repo {
-		t.Fatalf("walk up from a subdirectory: got %q (%v), want %q", root, ok, repo)
+	if !ok || root != want {
+		t.Fatalf("walk up from a subdirectory: got %q (%v), want %q", root, ok, want)
 	}
 }
 
@@ -168,6 +173,25 @@ func TestHeadFromGitDir(t *testing.T) {
 func TestHeadFromGitDirOutsideARepo(t *testing.T) {
 	if got := headFromGitDir(t.TempDir()); got != "" {
 		t.Fatalf("expected no ref, got %q", got)
+	}
+}
+
+func TestLongPathExpandsAnEightDotThreeAlias(t *testing.T) {
+	// A folder name long enough that Windows gives it a short alias.
+	dir := t.TempDir()
+	long := filepath.Join(dir, "BTS-MAIN-2026-Q3-archive-migration")
+	if err := os.MkdirAll(long, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	alias := shortPath(long)
+	if alias == "" || alias == long {
+		t.Skipf("this machine does not give the folder an 8.3 alias: %q", alias)
+	}
+
+	want := longPath(long)
+	if got := longPath(alias); got != want {
+		t.Fatalf("longPath(%q): got %q, want %q", alias, got, want)
 	}
 }
 

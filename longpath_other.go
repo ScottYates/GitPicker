@@ -8,3 +8,9 @@ package main
 func longPath(path string) string {
 	return path
 }
+
+// shortPath is the 8.3 alias Windows gives a long folder name. There is no
+// such thing on this platform.
+func shortPath(path string) string {
+	return ""
+}

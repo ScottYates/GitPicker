@@ -14,9 +14,9 @@ import (
 
 func TestFzyScorerMatchesPfzy(t *testing.T) {
 	cases := []struct {
-		needle  string
+		needle   string
 		haystack string
-		score   float64
+		score    float64
 	}{
 		{"ab", "acb", 0.89},
 		{"ab", "acbabc", 0.98},
