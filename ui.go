@@ -100,6 +100,7 @@ const (
 	phaseFiles
 	phaseMessage
 	phasePushConfirm
+	phasePRConfirm
 	phaseError
 )
 
@@ -140,7 +141,19 @@ type commitDoneMsg struct {
 }
 
 // pushDoneMsg reports the result of a push.
-type pushDoneMsg struct{ err error }
+type pushDoneMsg struct {
+	err error
+
+	// prURL is the address of the pull request page, when the push was to
+	// GitHub and there was a page to open.
+	prURL string
+}
+
+// browserDoneMsg reports that a page was opened in the browser.
+type browserDoneMsg struct {
+	url string
+	err error
+}
 
 // switchAction is the git work to do when a branch is picked.
 type switchAction struct {
@@ -211,6 +224,11 @@ type model struct {
 
 	// pushChoice is the yes or no answer to the push question.
 	pushChoice int
+
+	// prURL is the address of the pull request page, and prChoice is the
+	// yes or no answer to the question about opening it.
+	prURL    string
+	prChoice int
 
 	// fatal is the failure that ends the picker, if there is one.
 	//
@@ -439,7 +457,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = "Pushed " + m.current
 		m.statusErr = false
+		// A push to GitHub comes with the address of a pull request
+		// page, and the user is asked whether to open it.
+		if msg.prURL != "" {
+			m.phase = phasePRConfirm
+			m.prURL = msg.prURL
+			m.prChoice = 0
+			return m, nil
+		}
 		return m.resumePending()
+
+	case browserDoneMsg:
+		if msg.err != nil {
+			m.status = "could not open the browser: " + firstLine(msg.err.Error())
+			m.statusErr = true
+		} else {
+			m.status = "Opened the pull request page"
+			m.statusErr = false
+		}
+		return m, nil
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -605,10 +641,11 @@ func commitCmd(root, message string, paths []string) tea.Cmd {
 // pushCmd pushes the current branch to its upstream.
 func pushCmd(root string) tea.Cmd {
 	return func() tea.Msg {
-		if err := push(root); err != nil {
+		output, err := push(root)
+		if err != nil {
 			return pushDoneMsg{err: err}
 		}
-		return pushDoneMsg{}
+		return pushDoneMsg{prURL: pullRequestURL(root, output)}
 	}
 }
 
@@ -775,6 +812,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleMessageKey(msg)
 	case phasePushConfirm:
 		return m.handlePushConfirmKey(msg)
+	case phasePRConfirm:
+		return m.handlePRConfirmKey(msg)
 	case phaseError:
 		return m.handleErrorKey(msg)
 	}
@@ -1156,6 +1195,67 @@ func (m model) handlePushConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handlePRConfirmKey acts on a key press while the pull request question is
+// on screen.
+//
+// The pointer starts on yes, because the page is the point of the push.
+// Escape and n leave it alone.
+func (m model) handlePRConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := keyName(msg)
+
+	switch key {
+	case "esc", "n":
+		m.phase = phaseList
+		m.prURL = ""
+		m.prChoice = 0
+		return m.resumePending()
+	case "y":
+		address := m.prURL
+		m.phase = phaseList
+		m.prURL = ""
+		m.prChoice = 0
+		m.status = "opening the pull request page..."
+		m.statusErr = false
+		return m, openURLCmd(address)
+	case "up":
+		if m.prChoice > 0 {
+			m.prChoice--
+		}
+		return m, nil
+	case "down":
+		if m.prChoice < 1 {
+			m.prChoice++
+		}
+		return m, nil
+	case "enter":
+		open := m.prChoice == 0
+		address := m.prURL
+		m.phase = phaseList
+		m.prURL = ""
+		m.prChoice = 0
+		if open {
+			m.status = "opening the pull request page..."
+			m.statusErr = false
+			return m, openURLCmd(address)
+		}
+		return m.resumePending()
+	}
+	return m, nil
+}
+
+// openURLCmd opens an address in the default browser.
+//
+// It runs as a command so the picker does not freeze while the browser
+// starts.
+func openURLCmd(address string) tea.Cmd {
+	return func() tea.Msg {
+		if err := openBrowser(address); err != nil {
+			return browserDoneMsg{url: address, err: err}
+		}
+		return browserDoneMsg{url: address}
+	}
+}
+
 // selectedPaths are the files that are ticked.
 func (m model) selectedPaths() []string {
 	var paths []string
@@ -1240,6 +1340,8 @@ func (m model) View() string {
 		return m.viewMessage()
 	case phasePushConfirm:
 		return m.viewPushConfirm()
+	case phasePRConfirm:
+		return m.viewPRConfirm()
 	case phaseError:
 		return m.viewError()
 	}
@@ -1268,6 +1370,37 @@ func (m model) viewPushConfirm() string {
 	}
 	b.WriteString(yes + "\n")
 	b.WriteString(no + "\n")
+	b.WriteString(styleInfo.Render("y or n, enter to choose, esc to skip"))
+	return b.String()
+}
+
+// viewPRConfirm asks whether the pull request page should be opened.
+func (m model) viewPRConfirm() string {
+	var b strings.Builder
+
+	question := "Open the pull request page?"
+	if m.repoName != "" {
+		question = m.repoName + "  " + question
+	}
+	b.WriteString("? " + question + "\n")
+
+	yes := "  yes"
+	no := "  no"
+	if m.prChoice == 0 {
+		yes = pointer + " yes"
+	} else {
+		no = pointer + " no"
+	}
+	b.WriteString(yes + "\n")
+	b.WriteString(no + "\n")
+
+	// The address is shown so it is clear where the browser is going.
+	width := m.width
+	if width < 20 {
+		width = 20
+	}
+	b.WriteString(fitWidth(m.prURL, width) + "\n")
+
 	b.WriteString(styleInfo.Render("y or n, enter to choose, esc to skip"))
 	return b.String()
 }

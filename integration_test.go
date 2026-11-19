@@ -384,6 +384,52 @@ func TestThePickerEndsWithGitsExitCodeWhenAPullFails(t *testing.T) {
 	}
 }
 
+func TestAPushToAPlainRemoteAsksNothing(t *testing.T) {
+	withHome(t)
+
+	// A remote that is a folder on disk is not GitHub, so there is no
+	// pull request page to open.
+	repo, _ := makeTestRepoWithRemote(t)
+
+	output, input, results, failures := runPicker(t, repo)
+	defer input.Close()
+
+	time.Sleep(400 * time.Millisecond)
+
+	// Ctrl+P pushes the current branch.
+	if _, err := input.Write([]byte{0x10}); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, "the push to finish", func() bool {
+		return strings.Contains(output.String(), "Pushed main")
+	})
+
+	if strings.Contains(output.String(), "Open the pull request page?") {
+		t.Fatalf("there is no pull request page to open:\n%s", visible(output.String()))
+	}
+
+	// The picker carries on.
+	select {
+	case final := <-results:
+		t.Fatalf("the picker closed itself after pushing: %v", final)
+	case err := <-failures:
+		t.Fatalf("the picker failed: %v", err)
+	default:
+	}
+
+	if _, err := input.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-results:
+	case err := <-failures:
+		t.Fatalf("the picker failed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("escape did not close the picker")
+	}
+}
+
 func TestPickerCreatesABranchAndStaysOpen(t *testing.T) {
 	repo := makeTestRepo(t)
 	output, input, results, failures := runPicker(t, repo)

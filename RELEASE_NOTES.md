@@ -1,57 +1,43 @@
-## git-picker v1.5
+## git-picker v1.6
 
-Failures are now reported in full, and the exit code says what went wrong.
+After a push to GitHub, the picker offers to open the pull request page.
 
-### A failure ends the picker
+### The pull request page
 
-When a git command you asked for fails, the picker stops and shows the error
-in full:
-
-```
-! repo  git pull failed: fatal: Merge aborted
-
-+-- error --------------------------------
-| stdout:
-| Auto-merging file
-| CONFLICT (content): Merge conflict in file
-| stderr:
-| error: Automatic merge failed
-+---------------------------------------
-
-press any key to exit
-```
-
-Any key leaves. The same text is written to the terminal afterwards, so
-nothing is lost either way.
-
-Both streams are kept. Git splits the interesting part across them: a merge
-conflict writes the conflict lines to stdout and the failure to stderr, so
-either one on its own misses half of it.
-
-### The exit code is git's
-
-A failure exits with the exit code git gave, so a script can tell a failed
-pull from a failed push:
+A push to GitHub ends with git printing the address of a pull request. The
+picker picks that up and asks whether to open it:
 
 ```
-git-picker; echo $?
+? repo  Open the pull request page?
+
+> yes
+  no
+
+https://github.com/owner/repo/compare/develop...feature/x?quick_pull=1
+y or n, enter to choose, esc to skip
 ```
 
-| Exit code | What it means |
-| --- | --- |
-| 0 | the picker was used and left normally |
-| 1 | the picker could not work, or the folder is not a repository |
-| 128 | git failed, for example a merge conflict or a remote that is gone |
-| other | whatever git exited with |
+Answer yes and the page opens in your default browser. Answer no, or press
+escape, and the picker carries on.
 
-### A failed fetch does not end the picker
+It happens after any push, whether it came from the commit flow or from
+Ctrl+P. A push that was not to GitHub has no page to offer, so nothing is
+asked.
 
-The background fetch fails whenever the machine is offline, which is not
-worth closing the app over. It stays on the status line, and the picker
-carries on.
+### The pull request goes back where the work came from
 
-A switch, a pull, a commit, a push or the file listing all end the picker
-when they fail, because those are the things you asked for.
+The page is opened with the base branch already chosen, so the pull request
+goes back to the branch the work was branched from, rather than to the
+default branch of the repository.
+
+Git records that in the reflog of the branch, as `branch: Created from
+main`, and a branch made with no starting point is recorded as `Created from
+HEAD`, which the HEAD reflog then explains. A branch that is not on the
+remote is left out, because GitHub can only make a pull request against a
+branch that is in the repository, and GitHub picks its default in that case.
+
+When the branch already has a pull request, that pull request is opened as
+it is, because its base branch was already chosen when it was made.
 
 ### Keys
 
@@ -65,7 +51,7 @@ when they fail, because those are the things you asked for.
 | ctrl+c | commit: pick the files, then write the message |
 | ctrl+p | push the current branch |
 | enter | switch to the highlighted branch and pull |
-| y / n | answer the push question after a commit |
+| y / n | answer the push question, and the pull request question |
 | esc | leave |
 
 Escape is the way out. Escape always leaves, even while git is working.

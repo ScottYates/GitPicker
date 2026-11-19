@@ -470,7 +470,7 @@ func TestPush(t *testing.T) {
 
 	// A second commit to push.
 	runGitIn(t, repo, "commit", "-q", "--allow-empty", "-m", "second")
-	if err := push(repo); err != nil {
+	if _, err := push(repo); err != nil {
 		t.Fatalf("the push failed: %v", err)
 	}
 

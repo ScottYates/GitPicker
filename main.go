@@ -2,7 +2,7 @@ package main
 
 // git-picker: an interactive git branch picker that switches and pulls.
 //
-// Version: v1.5
+// Version: v1.6
 //
 // Finds the repository root, lists local and remote branches in a
 // fuzzy-selectable menu, switches to the chosen branch and pulls.
@@ -29,7 +29,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const version = "v1.5"
+const version = "v1.6"
 
 func main() {
 	os.Exit(mainExitCode(os.Args[1:], os.Stdout, os.Stderr))

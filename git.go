@@ -391,8 +391,15 @@ func commitFiles(cwd, message string, paths []string) error {
 }
 
 // push pushes the current branch to its upstream.
-func push(cwd string) error {
+//
+// The output comes back as well, because git prints the address of the
+// pull request at the end of a push, and that is the address the browser
+// should open.
+func push(cwd string) (string, error) {
 	stdout, stderr, code := runGit([]string{"push"}, cwd)
 	_, err := checkGit(stdout, stderr, code, "push")
-	return err
+	if err != nil {
+		return "", err
+	}
+	return stdout + "\n" + stderr, nil
 }
