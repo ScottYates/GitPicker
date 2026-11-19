@@ -1,0 +1,374 @@
+package main
+
+// Tests for the picker itself: paging, the sort toggle, the command panel
+// and the row rendering.
+
+import (
+	"regexp"
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// keyMsg builds the key press a test wants to send.
+func keyMsg(name string) tea.KeyMsg {
+	switch name {
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "backspace":
+		return tea.KeyMsg{Type: tea.KeyBackspace}
+	}
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(name)}
+}
+
+// ansiPattern matches the escape sequences lipgloss adds, so a rendered
+// string can be measured in visible characters.
+var ansiPattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// visible strips the styling so the printed width can be checked.
+func visible(text string) string {
+	return ansiPattern.ReplaceAllString(text, "")
+}
+
+// testModel builds a picker over a fixed set of branches.
+func testModel(names ...string) model {
+	branches := make([]Branch, 0, len(names))
+	for _, name := range names {
+		branches = append(branches, Branch{Name: name, Timestamp: testNow})
+	}
+	ch := make(chan fetchResult, 1)
+	return newModel(`C:\repo`, "repo", "master", branches, ch)
+}
+
+func TestPagingClampsAtBothEnds(t *testing.T) {
+	names := make([]string, 0, 40)
+	for i := 0; i < 40; i++ {
+		names = append(names, string(rune('a'+i%26))+strings.Repeat("x", i))
+	}
+	m := testModel(names...)
+	m.height = 24
+
+	// A page down from the top lands one screenful down.
+	m.movePage(1)
+	if m.cursor != m.pageRows() {
+		t.Fatalf("after a page down: got cursor %d, want %d", m.cursor, m.pageRows())
+	}
+
+	// Paging past the end stops at the last item rather than wrapping.
+	m.movePage(10)
+	if m.cursor != len(m.matches)-1 {
+		t.Fatalf("paging past the end: got cursor %d, want %d", m.cursor, len(m.matches)-1)
+	}
+
+	// And paging back before the start stops at the top.
+	m.cursor = 0
+	m.movePage(-1)
+	if m.cursor != 0 {
+		t.Fatalf("paging before the start: got cursor %d, want 0", m.cursor)
+	}
+}
+
+func TestPagingKeepsThePointerVisible(t *testing.T) {
+	m := testModel("a", "b", "c", "d", "e")
+	m.height = 24
+	m.cursor = 4
+	m.scrollIntoView()
+	if m.offset > m.cursor {
+		t.Fatalf("the pointer scrolled out of view: offset %d, cursor %d", m.offset, m.cursor)
+	}
+}
+
+func TestSortToggleKeepsTheSelection(t *testing.T) {
+	m := testModel("zulu", "master", "alpha")
+	m.cursor = 1
+	selected := m.branchAt(m.matches[m.cursor]).Name
+
+	m.toggleSort()
+	if m.sortMode != sortName {
+		t.Fatalf("sort mode: got %q, want %q", m.sortMode, sortName)
+	}
+	if got := m.branchAt(m.matches[m.cursor]).Name; got != selected {
+		t.Fatalf("the selection moved: got %q, want %q", got, selected)
+	}
+
+	m.toggleSort()
+	if m.sortMode != sortTime {
+		t.Fatalf("sort mode: got %q, want %q", m.sortMode, sortTime)
+	}
+	if got := m.branchAt(m.matches[m.cursor]).Name; got != selected {
+		t.Fatalf("the selection moved: got %q, want %q", got, selected)
+	}
+}
+
+func TestSortToggleKeepsPinsFirst(t *testing.T) {
+	m := testModel("aaa", "master", "zzz")
+	m.toggleSort()
+	if got := m.branchAt(m.matches[0]).Name; got != "master" {
+		t.Fatalf("the pinned branch should still lead, got %q", got)
+	}
+}
+
+func TestToggleSortReordersTheList(t *testing.T) {
+	m := testModel("zulu", "alpha", "mike")
+	m.toggleSort()
+	got := []string{}
+	for _, entry := range m.matches {
+		got = append(got, m.branchAt(entry).Name)
+	}
+	want := []string{"alpha", "mike", "zulu"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("alphabetical order: got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestPanelShowsTheCommands(t *testing.T) {
+	m := testModel("master", "feature/x")
+	m.width = 80
+	m.height = 24
+	m.branches[0].Upstream = "origin/master"
+
+	lines := m.panelLines()
+	if len(lines) != 3 {
+		t.Fatalf("the panel should be three rows, got %d", len(lines))
+	}
+
+	title := visible(lines[0])
+	if !strings.HasPrefix(title, "+-- will run ") {
+		t.Fatalf("panel title: got %q", title)
+	}
+	if len(title) != 80 {
+		t.Fatalf("the panel should fill the width: got %d cells", len(title))
+	}
+
+	body := visible(lines[1])
+	if !strings.HasPrefix(body, "| git switch master") {
+		t.Fatalf("panel body: got %q", body)
+	}
+	if len(body) != 80 {
+		t.Fatalf("the panel body should fill the width: got %d cells", len(body))
+	}
+}
+
+func TestPanelWarnsWhenThereIsNoUpstream(t *testing.T) {
+	m := testModel("master")
+	m.width = 80
+	m.height = 24
+
+	lines := m.panelLines()
+	if len(lines) < 3 {
+		t.Fatalf("the panel should be three rows, got %d", len(lines))
+	}
+	if !strings.Contains(visible(lines[2]), "no upstream") {
+		t.Fatalf("the panel should warn about the missing upstream: got %q", visible(lines[2]))
+	}
+}
+
+func TestPanelHasAWidthFloor(t *testing.T) {
+	m := testModel("master")
+	m.width = 10
+	m.height = 24
+
+	lines := m.panelLines()
+	if len(visible(lines[0])) < minPanelWidth {
+		t.Fatalf("the panel should not go below %d cells, got %d", minPanelWidth, len(visible(lines[0])))
+	}
+}
+
+func TestStyledLabelKeepsItsWidth(t *testing.T) {
+	m := testModel("master", "feature/x")
+	m.width = 80
+	m.height = 24
+
+	label := m.labels[0]
+	styled := styleLabel(m.branchAt(m.matches[0]).Name, label, []int{2, 3}, true)
+	if len(visible(styled)) != len(label) {
+		t.Fatalf("styling changed the width: got %d, want %d", len(visible(styled)), len(label))
+	}
+}
+
+func TestViewFitsTheTerminalHeight(t *testing.T) {
+	m := testModel("master", "feature/x", "release/1")
+	m.width = 80
+	m.height = 20
+
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) != m.height {
+		t.Fatalf("the view should fill the screen: got %d rows, want %d", len(lines), m.height)
+	}
+}
+
+func TestViewShowsTheRepositoryName(t *testing.T) {
+	m := testModel("master")
+	m.width = 80
+	m.height = 20
+
+	if !strings.Contains(m.View(), "repo") {
+		t.Fatal("the repository name should be in the header")
+	}
+}
+
+func TestViewShowsThePosition(t *testing.T) {
+	m := testModel("master", "feature/x")
+	m.width = 80
+	m.height = 20
+
+	if !strings.Contains(visible(m.View()), "[1/2]") {
+		t.Fatalf("the position readout is missing: %q", visible(m.View()))
+	}
+}
+
+func TestViewShowsTheSortMode(t *testing.T) {
+	m := testModel("master")
+	m.width = 80
+	m.height = 20
+
+	if !strings.Contains(visible(m.View()), "sort: time") {
+		t.Fatalf("the sort mode is missing: %q", visible(m.View()))
+	}
+}
+
+func TestQueryFiltersAndReportsTheCount(t *testing.T) {
+	m := testModel("master", "feature/x", "release/1")
+	m.width = 80
+	m.height = 20
+	m.query = "master"
+	m.refilter()
+
+	view := visible(m.View())
+	if !strings.Contains(view, "(1 of 3 match)") {
+		t.Fatalf("the match count is missing: %q", view)
+	}
+}
+
+func TestNewBranchPromptShowsBothCommands(t *testing.T) {
+	m := testModel("master", "feature/x")
+	m.width = 80
+	m.height = 20
+	m.phase = phaseName
+	m.nameBuf = "my-branch"
+
+	view := visible(m.View())
+	if !strings.Contains(view, "git switch master") {
+		t.Fatalf("the switch command is missing: %q", view)
+	}
+	if !strings.Contains(view, "git switch -c my-branch") {
+		t.Fatalf("the create command is missing: %q", view)
+	}
+}
+
+func TestValidNameStartsTheWork(t *testing.T) {
+	m := testModel("master", "feature/x")
+	m.phase = phaseName
+	m.nameBuf = " my-branch "
+	next, cmd := m.handleNameKey(keyMsg("enter"), "enter")
+	m = next.(model)
+
+	if m.phase != phaseList {
+		t.Fatalf("the prompt should close, got phase %d", m.phase)
+	}
+	if cmd == nil {
+		t.Fatal("no work was started")
+	}
+	if !m.busy {
+		t.Fatal("the picker should be busy while git works")
+	}
+}
+
+func TestEmptyNameIsRejected(t *testing.T) {
+	m := testModel("master")
+	m.phase = phaseName
+	next, cmd := m.handleNameKey(keyMsg("enter"), "enter")
+	m = next.(model)
+
+	if cmd != nil {
+		t.Fatal("an empty name should not start any work")
+	}
+	if m.nameErr == "" {
+		t.Fatal("an empty name should show an error")
+	}
+	if m.phase != phaseName {
+		t.Fatalf("the prompt should stay open, got phase %d", m.phase)
+	}
+}
+
+func TestInvalidNameIsRejected(t *testing.T) {
+	m := testModel("master")
+	m.phase = phaseName
+	m.nameBuf = "has space"
+	next, cmd := m.handleNameKey(keyMsg("enter"), "enter")
+	m = next.(model)
+
+	if cmd != nil {
+		t.Fatal("an invalid name should not start any work")
+	}
+	if m.nameErr == "" {
+		t.Fatal("an invalid name should show an error")
+	}
+}
+
+func TestEscapeInTheNamePromptGoesBack(t *testing.T) {
+	m := testModel("master")
+	m.phase = phaseName
+	next, _ := m.handleNameKey(keyMsg("esc"), "esc")
+	m = next.(model)
+
+	if m.phase != phaseList {
+		t.Fatalf("escape should return to the list, got phase %d", m.phase)
+	}
+}
+
+func TestEscapeLeavesThePicker(t *testing.T) {
+	m := testModel("master")
+	next, cmd := m.handleKey(keyMsg("esc"))
+	m = next.(model)
+
+	if cmd == nil {
+		t.Fatal("escape should quit the picker")
+	}
+	if m.interrupted {
+		t.Fatal("escape is a deliberate exit, not an interruption")
+	}
+}
+
+func TestCtrlCLeavesThePicker(t *testing.T) {
+	m := testModel("master")
+	next, cmd := m.handleKey(keyMsg("ctrl+c"))
+	m = next.(model)
+
+	if cmd == nil {
+		t.Fatal("ctrl+c should quit the picker")
+	}
+	if !m.interrupted {
+		t.Fatal("ctrl+c should be recorded as an interruption")
+	}
+}
+
+func TestKeysAreIgnoredWhileGitIsWorking(t *testing.T) {
+	m := testModel("master", "feature/x")
+	m.busy = true
+	m.cursor = 0
+	next, _ := m.handleKey(keyMsg("down"))
+	m = next.(model)
+
+	if m.cursor != 0 {
+		t.Fatalf("the pointer moved while git was working: %d", m.cursor)
+	}
+}
+
+func TestSwitchingKeepsThePickerOpen(t *testing.T) {
+	m := testModel("master", "feature/x")
+	next, cmd := m.handleKey(keyMsg("enter"))
+	m = next.(model)
+
+	if cmd == nil {
+		t.Fatal("enter should start the switch")
+	}
+	if m.busy != true {
+		t.Fatal("the picker should be busy while git works")
+	}
+}
