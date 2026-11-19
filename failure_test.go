@@ -314,10 +314,31 @@ func brokenRepo(t *testing.T) string {
 	return dir
 }
 
+// gitExitCode is the exit code git gives for a command that fails.
+func gitExitCode(t *testing.T, dir string, args ...string) int {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	err := cmd.Run()
+	if err == nil {
+		t.Fatalf("git %v was expected to fail", args)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return exitErr.ExitCode()
+}
+
 func TestTheProcessExitsWithGitsExitCode(t *testing.T) {
 	// This is the whole point of the feature: a script that runs the
 	// picker has to be able to see that it failed, and why.
 	repo := brokenRepo(t)
+
+	// The code to expect is git's own, for the same command. Git words
+	// this differently between versions and platforms, and the exit code
+	// is the part that has to agree.
+	want := gitExitCode(t, repo, "for-each-ref", "--format=%(refname)")
 
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess$")
 	cmd.Dir = repo
@@ -333,11 +354,14 @@ func TestTheProcessExitsWithGitsExitCode(t *testing.T) {
 		t.Fatalf("the app could not be run: %v", err)
 	}
 
-	if code != 128 {
-		t.Fatalf("the exit code: got %d, want 128\n%s", code, stderr.String())
+	if code != want {
+		t.Fatalf("the exit code: got %d, want git's %d\n%s", code, want, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "not a git repository") {
+	if !strings.Contains(stderr.String(), "git for-each-ref failed") {
 		t.Fatalf("the error should be reported in full:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "fatal:") {
+		t.Fatalf("git's own words should be reported:\n%s", stderr.String())
 	}
 }
 

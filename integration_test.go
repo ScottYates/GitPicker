@@ -372,7 +372,14 @@ func TestThePickerEndsWithGitsExitCodeWhenAPullFails(t *testing.T) {
 	if m.fatal.Code == 0 {
 		t.Fatal("the exit code should have been kept")
 	}
-	if !strings.Contains(m.fatal.Detail, "does not appear to be a git repository") {
+	// The exit code is git's own, for the same command.
+	want := gitExitCode(t, repo, "pull")
+	if m.fatal.Code != want {
+		t.Fatalf("the exit code: got %d, want git's %d", m.fatal.Code, want)
+	}
+	// Git words this differently between versions, so the check is on the
+	// parts that do not move.
+	if !strings.Contains(m.fatal.Detail, "fatal:") {
 		t.Fatalf("the whole error should be kept:\n%s", m.fatal.Detail)
 	}
 }
