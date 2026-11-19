@@ -40,7 +40,7 @@ func testModel(names ...string) model {
 		branches = append(branches, Branch{Name: name, Timestamp: testNow})
 	}
 	ch := make(chan fetchResult, 1)
-	return newModel(`C:\repo`, "repo", "master", branches, ch)
+	return newModel(`C:\repo`, "repo", "master", branches, ch, nil)
 }
 
 func TestPagingClampsAtBothEnds(t *testing.T) {
@@ -265,7 +265,7 @@ func TestValidNameStartsTheWork(t *testing.T) {
 	m := testModel("master", "feature/x")
 	m.phase = phaseName
 	m.nameBuf = " my-branch "
-	next, cmd := m.handleNameKey(keyMsg("enter"), "enter")
+	next, cmd := m.handleNameKey(keyMsg("enter"))
 	m = next.(model)
 
 	if m.phase != phaseList {
@@ -282,7 +282,7 @@ func TestValidNameStartsTheWork(t *testing.T) {
 func TestEmptyNameIsRejected(t *testing.T) {
 	m := testModel("master")
 	m.phase = phaseName
-	next, cmd := m.handleNameKey(keyMsg("enter"), "enter")
+	next, cmd := m.handleNameKey(keyMsg("enter"))
 	m = next.(model)
 
 	if cmd != nil {
@@ -300,7 +300,7 @@ func TestInvalidNameIsRejected(t *testing.T) {
 	m := testModel("master")
 	m.phase = phaseName
 	m.nameBuf = "has space"
-	next, cmd := m.handleNameKey(keyMsg("enter"), "enter")
+	next, cmd := m.handleNameKey(keyMsg("enter"))
 	m = next.(model)
 
 	if cmd != nil {
@@ -314,7 +314,7 @@ func TestInvalidNameIsRejected(t *testing.T) {
 func TestEscapeInTheNamePromptGoesBack(t *testing.T) {
 	m := testModel("master")
 	m.phase = phaseName
-	next, _ := m.handleNameKey(keyMsg("esc"), "esc")
+	next, _ := m.handleNameKey(keyMsg("esc"))
 	m = next.(model)
 
 	if m.phase != phaseList {
@@ -325,26 +325,37 @@ func TestEscapeInTheNamePromptGoesBack(t *testing.T) {
 func TestEscapeLeavesThePicker(t *testing.T) {
 	m := testModel("master")
 	next, cmd := m.handleKey(keyMsg("esc"))
-	m = next.(model)
+	_ = next
 
 	if cmd == nil {
 		t.Fatal("escape should quit the picker")
 	}
-	if m.interrupted {
-		t.Fatal("escape is a deliberate exit, not an interruption")
-	}
 }
 
-func TestCtrlCLeavesThePicker(t *testing.T) {
+func TestCtrlCStartsACommit(t *testing.T) {
+	// Ctrl+C is the commit key now, so it must not leave the picker.
 	m := testModel("master")
 	next, cmd := m.handleKey(keyMsg("ctrl+c"))
 	m = next.(model)
 
 	if cmd == nil {
-		t.Fatal("ctrl+c should quit the picker")
+		t.Fatal("ctrl+c should have started looking for changes")
 	}
-	if !m.interrupted {
-		t.Fatal("ctrl+c should be recorded as an interruption")
+	if m.phase != phaseFiles {
+		t.Fatalf("ctrl+c should open the file selection, got phase %d", m.phase)
+	}
+}
+
+func TestCtrlPStartsAPush(t *testing.T) {
+	m := testModel("master")
+	next, cmd := m.handleKey(keyMsg("ctrl+p"))
+	m = next.(model)
+
+	if cmd == nil {
+		t.Fatal("ctrl+p should have started the push")
+	}
+	if !m.busy {
+		t.Fatal("the picker should be busy while git works")
 	}
 }
 

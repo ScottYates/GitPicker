@@ -9,6 +9,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ func runPicker(t *testing.T, repo string) (*bytes.Buffer, *os.File, <-chan tea.M
 	fetchCh := make(chan fetchResult, 1)
 	fetchCh <- fetchResult{branches: branches}
 
-	m := newModel(repo, "repo", currentBranch(repo), branches, fetchCh)
+	m := newModel(repo, "repo", currentBranch(repo), branches, fetchCh, nil)
 
 	inReader, inWriter, err := os.Pipe()
 	if err != nil {
@@ -58,16 +59,17 @@ func runPicker(t *testing.T, repo string) (*bytes.Buffer, *os.File, <-chan tea.M
 }
 
 // waitFor polls until the condition holds or the deadline passes.
-func waitFor(t *testing.T, what string, condition func() bool) {
+func waitFor(t *testing.T, what string, condition func() bool) bool {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if condition() {
-			return
+			return true
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+	return false
 }
 
 func TestPickerStaysOpenAfterSwitching(t *testing.T) {
@@ -103,6 +105,108 @@ func TestPickerStaysOpenAfterSwitching(t *testing.T) {
 	}
 
 	// Escape is the exit key.
+	if _, err := input.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-results:
+	case err := <-failures:
+		t.Fatalf("the picker failed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("escape did not close the picker")
+	}
+}
+
+func TestPickerCommitsTheSelectedFile(t *testing.T) {
+	// The history file goes to a temporary folder for the test.
+	home := withHome(t)
+
+	repo := makeTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "chosen.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "other.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output, input, results, failures := runPicker(t, repo)
+	defer input.Close()
+
+	time.Sleep(400 * time.Millisecond)
+
+	// Ctrl+C opens the file selection.
+	if _, err := input.Write([]byte{0x03}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the file list", func() bool {
+		return strings.Contains(output.String(), "Select files to commit")
+	})
+	waitFor(t, "the files to be listed", func() bool {
+		return strings.Contains(output.String(), "chosen.txt")
+	})
+
+	// Space selects the first file, which is the one the pointer is on.
+	if _, err := input.Write([]byte(" ")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the file to be selected", func() bool {
+		return strings.Contains(output.String(), "1 selected")
+	})
+
+	// Enter opens the message box.
+	if _, err := input.Write([]byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the message box", func() bool {
+		return strings.Contains(output.String(), "Commit message")
+	})
+
+	// Type a message and confirm it.
+	if _, err := input.Write([]byte("a commit message")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if _, err := input.Write([]byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	committed := false
+	for time.Now().Before(deadline) {
+		if strings.Contains(output.String(), "Committed a commit message") {
+			committed = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !committed {
+		t.Fatalf("the commit did not finish. the picker said:\n%s", visible(output.String()))
+	}
+
+	// The commit is really in the repository, and only the chosen file is
+	// in it.
+	subject := runGitIn(t, repo, "log", "-1", "--format=%s")
+	if strings.TrimSpace(subject) != "a commit message" {
+		t.Fatalf("the commit message: got %q", strings.TrimSpace(subject))
+	}
+	files := runGitIn(t, repo, "show", "--name-only", "--format=", "HEAD")
+	if !strings.Contains(files, "chosen.txt") {
+		t.Fatalf("the chosen file should be in the commit, got %q", files)
+	}
+	if strings.Contains(files, "other.txt") {
+		t.Fatalf("the other file should not be in the commit, got %q", files)
+	}
+
+	// And the message was remembered.
+	loaded := loadHistory()
+	if len(loaded) == 0 || loaded[0] != "a commit message" {
+		t.Fatalf("the message should have been remembered, got %v", loaded)
+	}
+	if _, err := os.Stat(filepath.Join(home, historyFileName)); err != nil {
+		t.Fatalf("the history file was not written: %v", err)
+	}
+
+	// Escape leaves.
 	if _, err := input.Write([]byte("\x1b")); err != nil {
 		t.Fatal(err)
 	}

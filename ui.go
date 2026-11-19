@@ -18,6 +18,9 @@ package main
 // Switching does not close the picker. The branch is switched, the list is
 // rebuilt from what git now reports and the picker carries on, so branches
 // can be worked through one after another. Escape leaves.
+//
+// Ctrl+C starts a commit: the changed files are listed for selection, and
+// then the commit message is asked for. Ctrl+P pushes.
 
 import (
 	"fmt"
@@ -43,8 +46,30 @@ const (
 	// list: the message, the search line, the panel and the instructions.
 	chromeRows = 3 + previewRows
 
-	instruction = "type to filter, arrows/pgup/pgdn, ctrl+s sort, ctrl+n new branch, enter to switch, esc exits"
+	instruction = "type to filter, arrows/pgup/pgdn, ctrl+s sort, ctrl+n new branch, ctrl+c commit, ctrl+p push, esc exits"
+
+	filesInstruction   = "arrows to move, space to select, enter to continue, esc to cancel"
+	messageInstruction = "enter to commit, up/down for the last messages, esc to go back"
 )
+
+// instructionFor picks the longest hint that fits the terminal.
+//
+// The full list of keys is long, and a hint that wraps would push the view
+// past the bottom of the screen, so the shorter variants are used when the
+// terminal is narrow.
+func instructionFor(width int) string {
+	choices := []string{
+		instruction,
+		"type to filter, pgup/pgdn, ctrl+s sort, ctrl+n new, ctrl+c commit, ctrl+p push, esc exits",
+		"pgup/pgdn, ctrl+s sort, ctrl+n new, ctrl+c commit, ctrl+p push, esc exits",
+	}
+	for _, choice := range choices {
+		if len(choice) <= width {
+			return choice
+		}
+	}
+	return "esc exits"
+}
 
 var (
 	stylePointer = lipgloss.NewStyle().Foreground(lipgloss.Color("#61afef"))
@@ -57,6 +82,13 @@ var (
 	styleCurrent = lipgloss.NewStyle().Foreground(lipgloss.Color("#98c379")).Bold(true)
 	styleError   = lipgloss.NewStyle().Foreground(lipgloss.Color("#e06c75")).Bold(true)
 	styleGood    = lipgloss.NewStyle().Foreground(lipgloss.Color("#98c379")).Bold(true)
+	styleChecked = lipgloss.NewStyle().Foreground(lipgloss.Color("#98c379")).Bold(true)
+
+	// styleCursor is the block drawn over the character the caret is on.
+	//
+	// The terminal's own cursor is hidden for the lifetime of a bubbletea
+	// program, so a text field has to draw its own or the user types blind.
+	styleCursor = lipgloss.NewStyle().Reverse(true)
 )
 
 // phase is which part of the picker has the keyboard.
@@ -65,6 +97,8 @@ type phase int
 const (
 	phaseList phase = iota
 	phaseName
+	phaseFiles
+	phaseMessage
 )
 
 // fetchResult is what the background fetch reports back.
@@ -90,6 +124,46 @@ type pullDoneMsg struct {
 	err    error
 }
 
+// filesLoadedMsg carries the files git has changes in.
+type filesLoadedMsg struct {
+	files []FileStatus
+	err   error
+}
+
+// commitDoneMsg reports the result of a commit.
+type commitDoneMsg struct {
+	message string
+	files   int
+	err     error
+}
+
+// pushDoneMsg reports the result of a push.
+type pushDoneMsg struct{ err error }
+
+// switchAction is the git work to do when a branch is picked.
+type switchAction struct {
+	branch  Branch
+	newName string
+}
+
+// pendingAction is a git action that has to wait for the current one. for the current one.
+//
+// Git will not let two commands touch the index at once, so an action that
+// arrives while another one is running waits its turn rather than racing it.
+type pendingAction struct {
+	kind    string
+	branch  Branch
+	newName string
+	message string
+	paths   []string
+}
+
+const (
+	actionSwitch = "switch"
+	actionCommit = "commit"
+	actionPush   = "push"
+)
+
 // model is the picker state.
 type model struct {
 	root     string
@@ -113,37 +187,51 @@ type model struct {
 
 	phase     phase
 	nameBuf   string
+	namePos   int
 	nameErr   string
 	fetchMsg  string
 	status    string
 	statusErr bool
 	busy      bool
 
-	// pulling is true while a background pull is running. A switch that
-	// arrives in that window is held back until the pull is done, because
-	// git will not let two commands touch the index at once.
+	// The file selection for a commit.
+	files        []FileStatus
+	fileSelected map[string]bool
+	fileCursor   int
+	fileOffset   int
+	fileWidth    int
+
+	// The commit message and the history behind it.
+	messageBuf   string
+	messagePos   int
+	history      []string
+	historyIndex int
+
+	// pulling is true while a background pull is running.
 	pulling bool
-	pending *switchAction
+	pending *pendingAction
 
 	// The clock for the timings shown in the status line.
 	switchStarted time.Time
 	pullStarted   time.Time
 
-	fetchCh     chan fetchResult
-	interrupted bool
+	fetchCh chan fetchResult
 }
 
 // newModel builds the picker state from the branches already on disk.
-func newModel(root, repoName, current string, branches []Branch, fetchCh chan fetchResult) model {
+func newModel(root, repoName, current string, branches []Branch, fetchCh chan fetchResult, history []string) model {
 	m := model{
-		root:     root,
-		repoName: repoName,
-		current:  current,
-		sortMode: sortTime,
-		fetchCh:  fetchCh,
-		now:      nowSeconds(),
-		width:    80,
-		height:   24,
+		root:         root,
+		repoName:     repoName,
+		current:      current,
+		sortMode:     sortTime,
+		fetchCh:      fetchCh,
+		history:      history,
+		historyIndex: -1,
+		fileSelected: map[string]bool{},
+		now:          nowSeconds(),
+		width:        80,
+		height:       24,
 	}
 	m.setBranches(branches)
 	return m
@@ -292,7 +380,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Switched to " + msg.branch + ", pulling..."
 			return m, pullCmd(m.root, msg.branch)
 		}
-		return m, nil
+		return m.resumePending()
 
 	case pullDoneMsg:
 		m.pulling = false
@@ -303,13 +391,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Pulled %s (%.1fs)", msg.branch, time.Since(m.pullStarted).Seconds())
 			m.statusErr = false
 		}
-		// A switch that arrived while the pull was running goes now.
-		if m.pending != nil {
-			action := *m.pending
-			m.pending = nil
-			return m.startSwitch(action.branch, action.newName)
+		return m.resumePending()
+
+	case filesLoadedMsg:
+		if msg.err != nil {
+			m.phase = phaseList
+			m.status = "error: " + firstLine(msg.err.Error())
+			m.statusErr = true
+			return m, nil
 		}
+		if len(msg.files) == 0 {
+			m.phase = phaseList
+			m.status = "nothing to commit"
+			m.statusErr = false
+			return m, nil
+		}
+		m.files = msg.files
+		m.fileSelected = map[string]bool{}
+		m.fileCursor = 0
+		m.fileOffset = 0
+		m.fileWidth = m.fileColumnWidth()
+		m.status = ""
+		m.statusErr = false
 		return m, nil
+
+	case commitDoneMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.status = "commit failed: " + firstLine(msg.err.Error())
+			m.statusErr = true
+		} else {
+			m.status = fmt.Sprintf("Committed %s (%d file%s)", msg.message, msg.files, plural(msg.files))
+			m.statusErr = false
+		}
+		return m.resumePending()
+
+	case pushDoneMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.status = "push failed: " + firstLine(msg.err.Error())
+			m.statusErr = true
+		} else {
+			m.status = "Pushed " + m.current
+			m.statusErr = false
+		}
+		return m.resumePending()
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -328,211 +454,46 @@ func (m model) hasUpstream(name string) bool {
 	return false
 }
 
-// controlKeyName maps a control character to the key it stands for.
-//
-// A console with virtual terminal input enabled hands over the raw control
-// byte with no modifier flag attached, so ctrl+n arrives as an ordinary rune
-// holding 0x0e. Bubbletea only turns that into the ctrl+n key when the
-// console reports the ctrl modifier, so without this the byte lands in the
-// search box and quietly filters the list instead of doing anything. That
-// also empties the list, which is why the new branch prompt then refuses to
-// open: there is nothing left to branch from.
-func controlKeyName(r rune) (string, bool) {
-	switch r {
-	case 0x00:
-		return "ctrl+@", true
-	case 0x08:
-		return "backspace", true
-	case 0x09:
-		return "tab", true
-	case 0x0a, 0x0d:
-		return "enter", true
-	case 0x1b:
-		return "esc", true
-	case 0x1c:
-		return "ctrl+\\", true
-	case 0x1d:
-		return "ctrl+]", true
-	case 0x1e:
-		return "ctrl+^", true
-	case 0x1f:
-		return "ctrl+_", true
-	case 0x7f:
-		return "backspace", true
+// plural is the extra letter a count needs.
+func plural(count int) string {
+	if count == 1 {
+		return ""
 	}
-	if r >= 0x01 && r <= 0x1a {
-		// The control characters that stand for a letter, skipping the
-		// ones already handled above.
-		switch r {
-		case 0x09, 0x0a, 0x0d:
-			return "", false
-		}
-		return "ctrl+" + string(rune('a'+r-1)), true
-	}
-	return "", false
+	return "s"
 }
 
-// stripControl removes the control characters from text, so that a stray
-// byte can never end up in the search box or a branch name.
-func stripControl(text string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return -1
-		}
-		return r
-	}, text)
+// resumePending starts the action that was held back, if there is one.
+func (m *model) resumePending() (tea.Model, tea.Cmd) {
+	if m.pending == nil {
+		return *m, nil
+	}
+	action := *m.pending
+	m.pending = nil
+	return m.run(action)
 }
 
-// handleKey acts on a key press.
-func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	key := keyName(msg)
-
-	// Ctrl+C always leaves, even while git is working.
-	if key == "ctrl+c" {
-		m.interrupted = true
-		return m, tea.Quit
+// run starts a git action.
+func (m *model) run(action pendingAction) (tea.Model, tea.Cmd) {
+	switch action.kind {
+	case actionCommit:
+		return m.startCommit(action.message, action.paths)
+	case actionPush:
+		return m.startPush()
+	default:
+		return m.startSwitch(action.branch, action.newName)
 	}
-
-	// Escape is the exit key, and it leaves even while git is working.
-	// Waiting for a slow command with no way out is the one thing that must
-	// never happen.
-	if key == "esc" {
-		return m, tea.Quit
-	}
-
-	if m.phase == phaseName {
-		return m.handleNameKey(msg, key)
-	}
-
-	switch key {
-	case "ctrl+s":
-		m.toggleSort()
-		return m, nil
-	case "ctrl+n":
-		if len(m.matches) > 0 {
-			m.phase = phaseName
-			m.nameBuf = ""
-			m.nameErr = ""
-		}
-		return m, nil
-	case "enter":
-		if len(m.matches) > 0 {
-			return m.startOrDefer(m.branchAt(m.matches[m.cursor]), "")
-		}
-		return m, nil
-	case "up":
-		if m.cursor > 0 {
-			m.cursor--
-		}
-		m.scrollIntoView()
-		return m, nil
-	case "down":
-		if m.cursor < len(m.matches)-1 {
-			m.cursor++
-		}
-		m.scrollIntoView()
-		return m, nil
-	case "pgup":
-		m.movePage(-1)
-		return m, nil
-	case "pgdown":
-		m.movePage(1)
-		return m, nil
-	case "backspace":
-		if m.query != "" {
-			runes := []rune(m.query)
-			m.query = string(runes[:len(runes)-1])
-			m.refilter()
-			m.scrollIntoView()
-		}
-		return m, nil
-	}
-
-	// Anything else that is a printable character goes into the search
-	// buffer. A control character never does: it is a key press, not text.
-	if msg.Type == tea.KeyRunes {
-		text := stripControl(string(msg.Runes))
-		if text != "" {
-			m.query += text
-			m.refilter()
-			m.scrollIntoView()
-		}
-	}
-	return m, nil
 }
 
-// keyName is the name of a key press, with a control character standing in
-// for the combination it represents.
-//
-// Bubbletea reports ctrl+n as the key ctrl+n when the console tells it the
-// ctrl modifier is held, and as an ordinary rune holding 0x0e when it does
-// not. The second case is what a terminal in virtual terminal input mode
-// does, so the combination is worked out here rather than trusted.
-func keyName(msg tea.KeyMsg) string {
-	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
-		if name, ok := controlKeyName(msg.Runes[0]); ok {
-			return name
-		}
-	}
-	return msg.String()
-}
-
-// handleNameKey acts on a key press while the new branch name is being typed.
-func (m model) handleNameKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "esc":
-		// Escape goes back to the list. A second escape leaves.
-		m.phase = phaseList
-		m.nameBuf = ""
-		m.nameErr = ""
-		return m, nil
-	case "enter":
-		name := strings.TrimSpace(m.nameBuf)
-		if name == "" {
-			m.nameErr = "a branch name is needed"
-			return m, nil
-		}
-		if err := validBranchName(name); err != nil {
-			m.nameErr = err.Error()
-			return m, nil
-		}
-		m.phase = phaseList
-		m.nameBuf = ""
-		m.nameErr = ""
-		return m.startOrDefer(m.branchAt(m.matches[m.cursor]), name)
-	case "backspace":
-		if m.nameBuf != "" {
-			runes := []rune(m.nameBuf)
-			m.nameBuf = string(runes[:len(runes)-1])
-			m.nameErr = ""
-		}
-		return m, nil
-	}
-
-	if msg.Type == tea.KeyRunes {
-		text := stripControl(string(msg.Runes))
-		if text != "" {
-			m.nameBuf += text
-			m.nameErr = ""
-		}
-	}
-	return m, nil
-}
-
-// startOrDefer starts a switch, or holds it back while git is already
+// startOrDefer starts a git action, or holds it back while git is already
 // working.
-//
-// Git will not let two commands touch the index at once, so a switch that
-// arrives while a pull is running waits its turn rather than racing it.
-func (m *model) startOrDefer(branch *Branch, newName string) (tea.Model, tea.Cmd) {
-	action := switchAction{branch: *branch, newName: newName}
+func (m *model) startOrDefer(action pendingAction) (tea.Model, tea.Cmd) {
 	if m.gitBusy() {
 		m.pending = &action
 		m.status = "waiting for the current git command to finish..."
 		m.statusErr = false
 		return *m, nil
 	}
-	return m.startSwitch(action.branch, action.newName)
+	return m.run(action)
 }
 
 // startSwitch begins the git work for a picked branch.
@@ -549,10 +510,27 @@ func (m *model) startSwitch(branch Branch, newName string) (tea.Model, tea.Cmd) 
 	return *m, switchCmd(root, action)
 }
 
-// switchAction is the git work to do when a branch is picked.
-type switchAction struct {
-	branch  Branch
-	newName string
+// startCommit commits the selected files.
+func (m *model) startCommit(message string, paths []string) (tea.Model, tea.Cmd) {
+	m.busy = true
+	m.status = "committing..."
+	m.statusErr = false
+	root := m.root
+	return *m, commitCmd(root, message, paths)
+}
+
+// startPush pushes the current branch.
+func (m *model) startPush() (tea.Model, tea.Cmd) {
+	m.busy = true
+	m.status = "pushing " + m.current + "..."
+	m.statusErr = false
+	root := m.root
+	return *m, pushCmd(root)
+}
+
+// gitBusy reports whether a git command is running.
+func (m model) gitBusy() bool {
+	return m.busy || m.pulling
 }
 
 // switchCmd runs the switch, and the new branch when there is one.
@@ -584,9 +562,38 @@ func pullCmd(root, branch string) tea.Cmd {
 	}
 }
 
-// gitBusy reports whether a git command is running.
-func (m model) gitBusy() bool {
-	return m.busy || m.pulling
+// commitCmd commits the selected files with the message.
+func commitCmd(root, message string, paths []string) tea.Cmd {
+	return func() tea.Msg {
+		if err := commitFiles(root, message, paths); err != nil {
+			return commitDoneMsg{message: message, err: err}
+		}
+		return commitDoneMsg{message: message, files: len(paths)}
+	}
+}
+
+// pushCmd pushes the current branch to its upstream.
+func pushCmd(root string) tea.Cmd {
+	return func() tea.Msg {
+		if err := push(root); err != nil {
+			return pushDoneMsg{err: err}
+		}
+		return pushDoneMsg{}
+	}
+}
+
+// statusFilesCmd lists the files git has changes in.
+//
+// It runs as a command because git status walks the whole working tree and
+// can take a moment on a big repository.
+func statusFilesCmd(root string) tea.Cmd {
+	return func() tea.Msg {
+		files, err := statusFiles(root)
+		if err != nil {
+			return filesLoadedMsg{err: err}
+		}
+		return filesLoadedMsg{files: files}
+	}
 }
 
 // selectedName is the branch the pointer is on.
@@ -646,12 +653,516 @@ func (m *model) selectByName(name string) {
 	}
 }
 
-// View draws the picker.
-func (m model) View() string {
-	if m.phase == phaseName {
-		return m.viewName()
+// controlKeyName maps a control character to the key it stands for.
+//
+// A console with virtual terminal input enabled hands over the raw control
+// byte with no modifier flag attached, so ctrl+n arrives as an ordinary rune
+// holding 0x0e. Bubbletea only turns that into the ctrl+n key when the
+// console reports the ctrl modifier, so without this the byte lands in the
+// search box and quietly filters the list instead of doing anything. That
+// also empties the list, which is why the new branch prompt then refuses to
+// open: there is nothing left to branch from.
+func controlKeyName(r rune) (string, bool) {
+	switch r {
+	case 0x00:
+		return "ctrl+@", true
+	case 0x08:
+		return "backspace", true
+	case 0x09:
+		return "tab", true
+	case 0x0a, 0x0d:
+		return "enter", true
+	case 0x1b:
+		return "esc", true
+	case 0x1c:
+		return "ctrl+\\", true
+	case 0x1d:
+		return "ctrl+]", true
+	case 0x1e:
+		return "ctrl+^", true
+	case 0x1f:
+		return "ctrl+_", true
+	case 0x7f:
+		return "backspace", true
+	}
+	if r >= 0x01 && r <= 0x1a {
+		// The control characters that stand for a letter, skipping the
+		// ones already handled above.
+		switch r {
+		case 0x09, 0x0a, 0x0d:
+			return "", false
+		}
+		return "ctrl+" + string(rune('a'+r-1)), true
+	}
+	return "", false
+}
+
+// stripControl removes the control characters from text, so that a stray
+// byte can never end up in the search box, a branch name or a commit
+// message.
+func stripControl(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, text)
+}
+
+// keyName is the name of a key press, with a control character standing in
+// for the combination it represents.
+//
+// Bubbletea reports ctrl+n as the key ctrl+n when the console tells it the
+// ctrl modifier is held, and as an ordinary rune holding 0x0e when it does
+// not. The second case is what a terminal in virtual terminal input mode
+// does, so the combination is worked out here rather than trusted.
+func keyName(msg tea.KeyMsg) string {
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+		if name, ok := controlKeyName(msg.Runes[0]); ok {
+			return name
+		}
+	}
+	return msg.String()
+}
+
+// isSpaceKey reports whether the key press was the space bar.
+func isSpaceKey(msg tea.KeyMsg) bool {
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == ' ' {
+		return true
+	}
+	name := msg.String()
+	return name == " " || name == "space"
+}
+
+// handleKey acts on a key press.
+func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.phase {
+	case phaseName:
+		return m.handleNameKey(msg)
+	case phaseFiles:
+		return m.handleFilesKey(msg)
+	case phaseMessage:
+		return m.handleMessageKey(msg)
+	}
+	return m.handleListKey(msg)
+}
+
+// handleListKey acts on a key press in the branch list.
+func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := keyName(msg)
+
+	// Escape is the exit key, and it leaves even while git is working.
+	// Waiting for a slow command with no way out is the one thing that must
+	// never happen.
+	if key == "esc" {
+		return m, tea.Quit
 	}
 
+	switch key {
+	case "ctrl+c":
+		// Ctrl+C starts a commit: the changed files are listed next.
+		m.phase = phaseFiles
+		m.status = "looking for changes..."
+		m.statusErr = false
+		return m, statusFilesCmd(m.root)
+	case "ctrl+p":
+		return m.startOrDefer(pendingAction{kind: actionPush})
+	case "ctrl+s":
+		m.toggleSort()
+		return m, nil
+	case "ctrl+n":
+		if len(m.matches) > 0 {
+			m.phase = phaseName
+			m.nameBuf = ""
+			m.namePos = 0
+			m.nameErr = ""
+		}
+		return m, nil
+	case "enter":
+		if len(m.matches) > 0 {
+			return m.startOrDefer(pendingAction{
+				kind:   actionSwitch,
+				branch: *m.branchAt(m.matches[m.cursor]),
+			})
+		}
+		return m, nil
+	case "up":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+		m.scrollIntoView()
+		return m, nil
+	case "down":
+		if m.cursor < len(m.matches)-1 {
+			m.cursor++
+		}
+		m.scrollIntoView()
+		return m, nil
+	case "pgup":
+		m.movePage(-1)
+		return m, nil
+	case "pgdown":
+		m.movePage(1)
+		return m, nil
+	case "backspace":
+		if m.query != "" {
+			runes := []rune(m.query)
+			m.query = string(runes[:len(runes)-1])
+			m.refilter()
+			m.scrollIntoView()
+		}
+		return m, nil
+	}
+
+	// Anything else that is a printable character goes into the search
+	// buffer. A control character never does: it is a key press, not text.
+	if msg.Type == tea.KeyRunes {
+		text := stripControl(string(msg.Runes))
+		if text != "" {
+			m.query += text
+			m.refilter()
+			m.scrollIntoView()
+		}
+	}
+	return m, nil
+}
+
+// handleNameKey acts on a key press while the new branch name is being typed.
+func (m model) handleNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := keyName(msg)
+
+	switch key {
+	case "esc":
+		// Escape goes back to the list. A second escape leaves.
+		m.phase = phaseList
+		m.nameBuf = ""
+		m.namePos = 0
+		m.nameErr = ""
+		return m, nil
+	case "ctrl+c":
+		m.phase = phaseList
+		m.nameBuf = ""
+		m.namePos = 0
+		m.nameErr = ""
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.nameBuf)
+		if name == "" {
+			m.nameErr = "a branch name is needed"
+			return m, nil
+		}
+		if err := validBranchName(name); err != nil {
+			m.nameErr = err.Error()
+			return m, nil
+		}
+		m.phase = phaseList
+		m.nameBuf = ""
+		m.namePos = 0
+		m.nameErr = ""
+		return m.startOrDefer(pendingAction{
+			kind:    actionSwitch,
+			branch:  *m.branchAt(m.matches[m.cursor]),
+			newName: name,
+		})
+	case "backspace":
+		if m.namePos > 0 {
+			runes := []rune(m.nameBuf)
+			m.nameBuf = string(runes[:m.namePos-1]) + string(runes[m.namePos:])
+			m.namePos--
+			m.nameErr = ""
+		}
+		return m, nil
+	case "left":
+		if m.namePos > 0 {
+			m.namePos--
+		}
+		return m, nil
+	case "right":
+		if m.namePos < len([]rune(m.nameBuf)) {
+			m.namePos++
+		}
+		return m, nil
+	}
+
+	if msg.Type == tea.KeyRunes || isSpaceKey(msg) {
+		// The space bar arrives as its own key rather than as a rune, so
+		// it has to be picked out separately or every space in a commit
+		// message would be dropped.
+		text := " "
+		if msg.Type == tea.KeyRunes {
+			text = stripControl(string(msg.Runes))
+		}
+		if text != "" {
+			runes := []rune(m.nameBuf)
+			m.nameBuf = string(runes[:m.namePos]) + text + string(runes[m.namePos:])
+			m.namePos += len([]rune(text))
+			m.nameErr = ""
+		}
+	}
+	return m, nil
+}
+
+// handleFilesKey acts on a key press while the files for a commit are being
+// chosen.
+func (m model) handleFilesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := keyName(msg)
+
+	switch key {
+	case "esc", "ctrl+c":
+		m.phase = phaseList
+		m.files = nil
+		m.fileSelected = map[string]bool{}
+		return m, nil
+	case "enter":
+		paths := m.selectedPaths()
+		if len(paths) == 0 {
+			m.status = "select at least one file"
+			m.statusErr = true
+			return m, nil
+		}
+		m.phase = phaseMessage
+		m.messageBuf = ""
+		m.messagePos = 0
+		m.historyIndex = -1
+		m.status = ""
+		m.statusErr = false
+		return m, nil
+	case "up":
+		if m.fileCursor > 0 {
+			m.fileCursor--
+		}
+		m.scrollFilesIntoView()
+		return m, nil
+	case "down":
+		if m.fileCursor < len(m.files)-1 {
+			m.fileCursor++
+		}
+		m.scrollFilesIntoView()
+		return m, nil
+	case "pgup":
+		m.moveFilePage(-1)
+		return m, nil
+	case "pgdown":
+		m.moveFilePage(1)
+		return m, nil
+	}
+
+	if isSpaceKey(msg) && len(m.files) > 0 {
+		path := m.files[m.fileCursor].Path
+		if m.fileSelected[path] {
+			delete(m.fileSelected, path)
+		} else {
+			m.fileSelected[path] = true
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// handleMessageKey acts on a key press while the commit message is being
+// typed.
+func (m model) handleMessageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := keyName(msg)
+
+	switch key {
+	case "esc":
+		m.phase = phaseFiles
+		m.messageBuf = ""
+		m.messagePos = 0
+		return m, nil
+	case "ctrl+c":
+		m.phase = phaseList
+		m.messageBuf = ""
+		m.messagePos = 0
+		m.files = nil
+		m.fileSelected = map[string]bool{}
+		return m, nil
+	case "enter":
+		message := strings.TrimSpace(m.messageBuf)
+		if message == "" {
+			m.status = "a commit message is needed"
+			m.statusErr = true
+			return m, nil
+		}
+		paths := m.selectedPaths()
+		if len(paths) == 0 {
+			m.phase = phaseFiles
+			m.status = "select at least one file"
+			m.statusErr = true
+			return m, nil
+		}
+		// The message is remembered before the commit runs, so a commit
+		// that fails does not lose it.
+		m.history = rememberMessage(m.history, message)
+		_ = saveHistory(m.history)
+		m.phase = phaseList
+		m.messageBuf = ""
+		m.messagePos = 0
+		m.files = nil
+		m.fileSelected = map[string]bool{}
+		return m.startOrDefer(pendingAction{
+			kind:    actionCommit,
+			message: message,
+			paths:   paths,
+		})
+	case "backspace":
+		if m.messagePos > 0 {
+			runes := []rune(m.messageBuf)
+			m.messageBuf = string(runes[:m.messagePos-1]) + string(runes[m.messagePos:])
+			m.messagePos--
+		}
+		return m, nil
+	case "left":
+		if m.messagePos > 0 {
+			m.messagePos--
+		}
+		return m, nil
+	case "right":
+		if m.messagePos < len([]rune(m.messageBuf)) {
+			m.messagePos++
+		}
+		return m, nil
+	case "up":
+		m.recallHistory(1)
+		return m, nil
+	case "down":
+		m.recallHistory(-1)
+		return m, nil
+	}
+
+	if msg.Type == tea.KeyRunes || isSpaceKey(msg) {
+		// The space bar arrives as its own key rather than as a rune, so
+		// it has to be picked out separately or every space in a commit
+		// message would be dropped.
+		text := " "
+		if msg.Type == tea.KeyRunes {
+			text = stripControl(string(msg.Runes))
+		}
+		if text != "" {
+			runes := []rune(m.messageBuf)
+			m.messageBuf = string(runes[:m.messagePos]) + text + string(runes[m.messagePos:])
+			m.messagePos += len([]rune(text))
+			// Typing means the history is no longer being browsed.
+			m.historyIndex = -1
+		}
+	}
+	return m, nil
+}
+
+// recallHistory walks the saved messages.
+//
+// The history is newest first, so a step of +1 moves towards the older
+// messages and a step of -1 moves back towards the newer ones and finally
+// to an empty message.
+func (m *model) recallHistory(step int) {
+	if len(m.history) == 0 {
+		return
+	}
+	index := m.historyIndex + step
+	if index < -1 {
+		index = -1
+	}
+	if index >= len(m.history) {
+		index = len(m.history) - 1
+	}
+	m.historyIndex = index
+	if index < 0 {
+		m.messageBuf = ""
+		m.messagePos = 0
+		return
+	}
+	m.messageBuf = m.history[index]
+	m.messagePos = len([]rune(m.messageBuf))
+}
+
+// selectedPaths are the files that are ticked.
+func (m model) selectedPaths() []string {
+	var paths []string
+	for _, file := range m.files {
+		if m.fileSelected[file.Path] {
+			paths = append(paths, file.Path)
+		}
+	}
+	return paths
+}
+
+// fileColumnWidth is the width of the path column, so the file names line
+// up down the list.
+func (m model) fileColumnWidth() int {
+	width := 0
+	for _, file := range m.files {
+		if w := displayWidth(file.Path); w > width {
+			width = w
+		}
+	}
+	limit := m.width - 12
+	if limit < 8 {
+		limit = 8
+	}
+	if width > limit {
+		width = limit
+	}
+	return width
+}
+
+// fileRows is how many rows the file list may occupy.
+func (m model) fileRows() int {
+	rows := m.height - 3
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
+}
+
+// scrollFilesIntoView moves the file window so the pointer is visible.
+func (m *model) scrollFilesIntoView() {
+	rows := m.fileRows()
+	if m.fileCursor < m.fileOffset {
+		m.fileOffset = m.fileCursor
+	}
+	if m.fileCursor >= m.fileOffset+rows {
+		m.fileOffset = m.fileCursor - rows + 1
+	}
+	if m.fileOffset < 0 {
+		m.fileOffset = 0
+	}
+}
+
+// moveFilePage shifts the file pointer by a page, stopping at either end.
+func (m *model) moveFilePage(direction int) {
+	if len(m.files) == 0 {
+		return
+	}
+	rows := m.fileRows() - 1
+	if rows < 1 {
+		rows = 1
+	}
+	target := m.fileCursor + direction*rows
+	if target < 0 {
+		target = 0
+	}
+	if target > len(m.files)-1 {
+		target = len(m.files) - 1
+	}
+	m.fileCursor = target
+	m.scrollFilesIntoView()
+}
+
+// View draws the picker.
+func (m model) View() string {
+	switch m.phase {
+	case phaseName:
+		return m.viewName()
+	case phaseFiles:
+		return m.viewFiles()
+	case phaseMessage:
+		return m.viewMessage()
+	}
+	return m.viewList()
+}
+
+// viewList draws the branch list.
+func (m model) viewList() string {
 	var b strings.Builder
 
 	// The message line carries the repository folder name.
@@ -709,8 +1220,98 @@ func (m model) View() string {
 	}
 
 	// The instructions.
-	b.WriteString(styleInfo.Render(instruction))
+	b.WriteString(styleInfo.Render(instructionFor(m.width)))
 	return b.String()
+}
+
+// viewFiles draws the file selection for a commit.
+func (m model) viewFiles() string {
+	var b strings.Builder
+
+	message := "Select files to commit:"
+	if m.repoName != "" {
+		message = m.repoName + "  " + message
+	}
+	b.WriteString("? " + message + "\n")
+
+	b.WriteString(pointer + " ")
+	b.WriteString(styleInfo.Render("["))
+	b.WriteString(styleInfo.Render(fmt.Sprintf("%d/%d", m.fileCursor+1, len(m.files))))
+	b.WriteString(styleInfo.Render(fmt.Sprintf("]  %d selected", len(m.selectedPaths()))))
+	if m.status != "" {
+		style := styleGood
+		if m.statusErr {
+			style = styleError
+		}
+		b.WriteString(style.Render("  " + m.status))
+	}
+	b.WriteString("\n")
+
+	rows := m.fileRows()
+	for i := 0; i < rows; i++ {
+		index := m.fileOffset + i
+		if index >= len(m.files) {
+			b.WriteString("\n")
+			continue
+		}
+		file := m.files[index]
+		prefix := "  "
+		if index == m.fileCursor {
+			prefix = pointer + " "
+		}
+		b.WriteString(prefix + m.fileLabel(file) + "\n")
+	}
+
+	b.WriteString(styleInfo.Render(filesInstruction))
+	return b.String()
+}
+
+// fileLabel renders one row of the file list.
+func (m model) fileLabel(file FileStatus) string {
+	mark := "[ ]"
+	if m.fileSelected[file.Path] {
+		mark = styleChecked.Render("[x]")
+	}
+	return mark + " " + file.Code + " " + padToWidth(file.Path, m.fileWidth)
+}
+
+// viewMessage draws the commit message box.
+func (m model) viewMessage() string {
+	var b strings.Builder
+
+	message := "Commit message:"
+	if m.repoName != "" {
+		message = m.repoName + "  " + message
+	}
+	b.WriteString("? " + message + "\n")
+	b.WriteString(pointer + " " + withCursor(m.messageBuf, m.messagePos) + "\n")
+
+	hint := messageInstruction
+	if m.historyIndex >= 0 {
+		hint = fmt.Sprintf("enter to commit, %d of %d saved messages", m.historyIndex+1, len(m.history))
+	}
+	b.WriteString(styleInfo.Render(hint))
+	return b.String()
+}
+
+// withCursor renders text with a block cursor over the character at the
+// given position.
+//
+// The terminal's own cursor is hidden for the lifetime of a bubbletea
+// program, so a text field has to draw its own or the user types blind.
+func withCursor(text string, pos int) string {
+	runes := []rune(text)
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(runes) {
+		pos = len(runes)
+	}
+	if pos == len(runes) {
+		// The caret is past the end, so it sits on a space.
+		return string(runes) + styleCursor.Render(" ")
+	}
+	return string(runes[:pos]) + styleCursor.Render(string(runes[pos])) + string(runes[pos+1:])
 }
 
 // panelLines draws the command panel: a title rule and the commands that
@@ -776,7 +1377,7 @@ func (m model) viewName() string {
 		message = m.repoName + "  " + message
 	}
 	b.WriteString("? " + message + "\n")
-	b.WriteString(pointer + " " + m.nameBuf + "\n")
+	b.WriteString(pointer + " " + withCursor(m.nameBuf, m.namePos) + "\n")
 
 	width := m.width
 	if width < minPanelWidth {

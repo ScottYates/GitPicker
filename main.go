@@ -2,7 +2,7 @@ package main
 
 // git-picker: an interactive git branch picker that switches and pulls.
 //
-// Version: v1.2
+// Version: v1.3
 //
 // Finds the repository root, lists local and remote branches in a
 // fuzzy-selectable menu, switches to the chosen branch and pulls.
@@ -28,7 +28,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const version = "v1.2"
+const version = "v1.3"
 
 // exitCancelled is the exit code for a cancelled picker.
 const exitCancelled = 130
@@ -88,7 +88,7 @@ func run(dump bool, now int64, query string) error {
 	}
 
 	current := currentBranch(root)
-	picker := newModel(root, repoLabel(root), current, branches, fetchCh)
+	picker := newModel(root, repoLabel(root), current, branches, fetchCh, loadHistory())
 
 	program := tea.NewProgram(picker, tea.WithAltScreen())
 	final, err := program.Run()
@@ -96,16 +96,11 @@ func run(dump bool, now int64, query string) error {
 		return err
 	}
 
-	result, ok := final.(model)
-	if !ok {
+	if _, ok := final.(model); !ok {
 		return fmt.Errorf("the picker ended unexpectedly")
 	}
-	if result.interrupted {
-		// Ctrl+C is an interruption. Escape is a deliberate exit, and
-		// leaves quietly.
-		fmt.Println("Cancelled.")
-		os.Exit(exitCancelled)
-	}
+	// Escape leaves the picker, which is a normal ending rather than a
+	// cancellation, so it exits quietly.
 	return nil
 }
 

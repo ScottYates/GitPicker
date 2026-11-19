@@ -18,4 +18,21 @@ func TestRenderSnapshot(t *testing.T) {
 	m.phase = phaseName
 	m.nameBuf = "my-new-branch"
 	t.Log("\n" + m.View())
+
+	m.phase = phaseFiles
+	m.files = []FileStatus{
+		{Code: " M", Path: "src/ui.go"},
+		{Code: "??", Path: "src/brand_new.go"},
+		{Code: " D", Path: "src/old.go"},
+	}
+	m.fileSelected = map[string]bool{"src/ui.go": true}
+	m.fileWidth = m.fileColumnWidth()
+	t.Log("\n" + m.View())
+
+	m.phase = phaseMessage
+	m.messageBuf = "fix the thing that was broken"
+	m.messagePos = len(m.messageBuf)
+	m.history = []string{"fix the thing that was broken", "an older message"}
+	m.historyIndex = 0
+	t.Log("\n" + m.View())
 }

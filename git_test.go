@@ -79,6 +79,10 @@ func makeTestRepo(t *testing.T) string {
 		}
 	}
 	run("init", "-q", "-b", "main")
+	// A real repository has an identity configured, either locally or
+	// globally. The test has neither, so it is set on the repository.
+	run("config", "user.email", "test@test")
+	run("config", "user.name", "test")
 	run("commit", "-q", "--allow-empty", "-m", "first")
 	run("branch", "feature/x")
 	run("branch", "master")

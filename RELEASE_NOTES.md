@@ -1,36 +1,24 @@
-## git-picker v1.2
+## git-picker v1.3
 
-Fixes the control keys, and takes the slow pull off the critical path.
+Commit and push from inside the picker.
 
-### The control keys
+### Ctrl+C commits
 
-`ctrl+s` and `ctrl+n` did nothing, and pressing a control key seemed to
-change the display instead.
+Ctrl+C opens the changed files, you pick the ones you want with space, and
+then the commit message is asked for. Only the files you ticked go into the
+commit, so anything else that happened to be staged is left alone. The
+picker stays open afterwards, and the commit is confirmed in the status
+line.
 
-The cause was in how the terminal delivers the key. When a console has
-virtual terminal input enabled, `ctrl+n` arrives as the raw control byte
-`0x0e` with no modifier flag attached. Bubbletea only turns that into the
-`ctrl+n` key when the console reports that ctrl is held, so the byte came
-through as an ordinary character and was typed into the search box. The
-search box then filtered the list down to nothing, which is why the display
-changed, why the new branch prompt refused to open (there was nothing left
-to branch from) and why `ctrl+s` did not sort anything.
+### Ctrl+P pushes
 
-The picker now works out which combination a control character stands for
-and acts on it, and a control character can no longer end up in the search
-box or in a branch name.
+Ctrl+P pushes the current branch to its upstream and reports what happened.
 
-### Switching is instant now
+### Commit message history
 
-`git pull` is the slow part of a switch, because it is the one that talks to
-the network. It used to hold up the whole picker, and every key was ignored
-while it ran, so a `ctrl+n` pressed during the wait was simply thrown away.
-
-- The branch is switched first, and the list updates straight away.
-- The pull runs in the background, and the status line says when it lands.
-- The keys keep working while it runs. Escape always leaves, even then.
-- A switch that arrives during a pull waits its turn rather than racing it.
-- The status line shows how long the switch and the pull each took.
+The last ten commit messages are kept in `.git-picker-commit-history` in your
+home folder. Up and down in the message box walk back through them, and a
+message you use again moves to the front rather than appearing twice.
 
 ### Keys
 
@@ -41,8 +29,13 @@ while it ran, so a `ctrl+n` pressed during the wait was simply thrown away.
 | pgup / pgdn | move a screenful |
 | ctrl+s | sort by time or by name, pinned branches first |
 | ctrl+n | switch to the highlighted branch and make a new one from it |
+| ctrl+c | commit: pick the files, then write the message |
+| ctrl+p | push the current branch |
 | enter | switch to the highlighted branch and pull |
 | esc | leave |
+
+Ctrl+C is a commit key now, so Escape is the way out. Escape always leaves,
+even while git is working.
 
 ### Install
 
