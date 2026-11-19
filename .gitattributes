@@ -1,0 +1,12 @@
+# Go source is always LF. A file checked out with CRLF is reported by
+# `gofmt -l` as unformatted, which makes the formatting gate fail on a
+# Windows runner for no reason.
+*.go text eol=lf
+
+*.py text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+
+# A PowerShell script is a Windows script.
+*.ps1 text eol=crlf
