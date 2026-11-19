@@ -22,6 +22,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -77,14 +78,16 @@ type fetchDoneMsg struct{ fetchResult }
 
 // switchDoneMsg reports the result of a switch, and the branch the picker
 // ended up on.
-//
-// The pull is reported separately from the switch, because a branch with no
-// upstream fails its pull while the switch itself worked perfectly well.
 type switchDoneMsg struct {
 	branch  string
 	newName string
-	pullErr error
 	err     error
+}
+
+// pullDoneMsg reports the result of a background pull.
+type pullDoneMsg struct {
+	branch string
+	err    error
 }
 
 // model is the picker state.
@@ -115,6 +118,16 @@ type model struct {
 	status    string
 	statusErr bool
 	busy      bool
+
+	// pulling is true while a background pull is running. A switch that
+	// arrives in that window is held back until the pull is done, because
+	// git will not let two commands touch the index at once.
+	pulling bool
+	pending *switchAction
+
+	// The clock for the timings shown in the status line.
+	switchStarted time.Time
+	pullStarted   time.Time
 
 	fetchCh     chan fetchResult
 	interrupted bool
@@ -265,14 +278,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.selectByName(selected)
 		if msg.newName != "" {
-			m.status = "Created and switched to " + msg.newName
+			m.status = fmt.Sprintf("Created and switched to %s (%.1fs)", msg.newName, time.Since(m.switchStarted).Seconds())
 		} else {
-			m.status = "Switched to " + msg.branch
+			m.status = fmt.Sprintf("Switched to %s (%.1fs)", msg.branch, time.Since(m.switchStarted).Seconds())
 		}
 		m.statusErr = false
-		if msg.pullErr != nil {
-			m.status += " (the pull failed: " + firstLine(msg.pullErr.Error()) + ")"
+		// The pull is the slow part, so it runs in the background and the
+		// picker carries on while it works. A branch with no upstream has
+		// nothing to pull.
+		if msg.newName == "" && m.hasUpstream(msg.branch) {
+			m.pulling = true
+			m.pullStarted = time.Now()
+			m.status = "Switched to " + msg.branch + ", pulling..."
+			return m, pullCmd(m.root, msg.branch)
+		}
+		return m, nil
+
+	case pullDoneMsg:
+		m.pulling = false
+		if msg.err != nil {
+			m.status = fmt.Sprintf("pull of %s failed: %s", msg.branch, firstLine(msg.err.Error()))
 			m.statusErr = true
+		} else {
+			m.status = fmt.Sprintf("Pulled %s (%.1fs)", msg.branch, time.Since(m.pullStarted).Seconds())
+			m.statusErr = false
+		}
+		// A switch that arrived while the pull was running goes now.
+		if m.pending != nil {
+			action := *m.pending
+			m.pending = nil
+			return m.startSwitch(action.branch, action.newName)
 		}
 		return m, nil
 
@@ -282,9 +317,75 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// hasUpstream reports whether a branch can be pulled, which is what the
+// branch list knows about it.
+func (m model) hasUpstream(name string) bool {
+	for _, branch := range m.branches {
+		if branch.Name == name {
+			return branch.Remote || branch.Upstream != ""
+		}
+	}
+	return false
+}
+
+// controlKeyName maps a control character to the key it stands for.
+//
+// A console with virtual terminal input enabled hands over the raw control
+// byte with no modifier flag attached, so ctrl+n arrives as an ordinary rune
+// holding 0x0e. Bubbletea only turns that into the ctrl+n key when the
+// console reports the ctrl modifier, so without this the byte lands in the
+// search box and quietly filters the list instead of doing anything. That
+// also empties the list, which is why the new branch prompt then refuses to
+// open: there is nothing left to branch from.
+func controlKeyName(r rune) (string, bool) {
+	switch r {
+	case 0x00:
+		return "ctrl+@", true
+	case 0x08:
+		return "backspace", true
+	case 0x09:
+		return "tab", true
+	case 0x0a, 0x0d:
+		return "enter", true
+	case 0x1b:
+		return "esc", true
+	case 0x1c:
+		return "ctrl+\\", true
+	case 0x1d:
+		return "ctrl+]", true
+	case 0x1e:
+		return "ctrl+^", true
+	case 0x1f:
+		return "ctrl+_", true
+	case 0x7f:
+		return "backspace", true
+	}
+	if r >= 0x01 && r <= 0x1a {
+		// The control characters that stand for a letter, skipping the
+		// ones already handled above.
+		switch r {
+		case 0x09, 0x0a, 0x0d:
+			return "", false
+		}
+		return "ctrl+" + string(rune('a'+r-1)), true
+	}
+	return "", false
+}
+
+// stripControl removes the control characters from text, so that a stray
+// byte can never end up in the search box or a branch name.
+func stripControl(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, text)
+}
+
 // handleKey acts on a key press.
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	key := msg.String()
+	key := keyName(msg)
 
 	// Ctrl+C always leaves, even while git is working.
 	if key == "ctrl+c" {
@@ -292,10 +393,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// While git is working the picker ignores the keyboard, so a second
-	// switch cannot be started on top of the first.
-	if m.busy {
-		return m, nil
+	// Escape is the exit key, and it leaves even while git is working.
+	// Waiting for a slow command with no way out is the one thing that must
+	// never happen.
+	if key == "esc" {
+		return m, tea.Quit
 	}
 
 	if m.phase == phaseName {
@@ -303,9 +405,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch key {
-	case "esc":
-		// Escape is the exit key.
-		return m, tea.Quit
 	case "ctrl+s":
 		m.toggleSort()
 		return m, nil
@@ -318,7 +417,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		if len(m.matches) > 0 {
-			return m.startSwitch(m.branchAt(m.matches[m.cursor]), "")
+			return m.startOrDefer(m.branchAt(m.matches[m.cursor]), "")
 		}
 		return m, nil
 	case "up":
@@ -350,13 +449,32 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Anything else that is a printable character goes into the search
-	// buffer.
+	// buffer. A control character never does: it is a key press, not text.
 	if msg.Type == tea.KeyRunes {
-		m.query += string(msg.Runes)
-		m.refilter()
-		m.scrollIntoView()
+		text := stripControl(string(msg.Runes))
+		if text != "" {
+			m.query += text
+			m.refilter()
+			m.scrollIntoView()
+		}
 	}
 	return m, nil
+}
+
+// keyName is the name of a key press, with a control character standing in
+// for the combination it represents.
+//
+// Bubbletea reports ctrl+n as the key ctrl+n when the console tells it the
+// ctrl modifier is held, and as an ordinary rune holding 0x0e when it does
+// not. The second case is what a terminal in virtual terminal input mode
+// does, so the combination is worked out here rather than trusted.
+func keyName(msg tea.KeyMsg) string {
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+		if name, ok := controlKeyName(msg.Runes[0]); ok {
+			return name
+		}
+	}
+	return msg.String()
 }
 
 // handleNameKey acts on a key press while the new branch name is being typed.
@@ -381,7 +499,7 @@ func (m model) handleNameKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 		m.phase = phaseList
 		m.nameBuf = ""
 		m.nameErr = ""
-		return m.startSwitch(m.branchAt(m.matches[m.cursor]), name)
+		return m.startOrDefer(m.branchAt(m.matches[m.cursor]), name)
 	case "backspace":
 		if m.nameBuf != "" {
 			runes := []rune(m.nameBuf)
@@ -392,22 +510,42 @@ func (m model) handleNameKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.Type == tea.KeyRunes {
-		m.nameBuf += string(msg.Runes)
-		m.nameErr = ""
+		text := stripControl(string(msg.Runes))
+		if text != "" {
+			m.nameBuf += text
+			m.nameErr = ""
+		}
 	}
 	return m, nil
+}
+
+// startOrDefer starts a switch, or holds it back while git is already
+// working.
+//
+// Git will not let two commands touch the index at once, so a switch that
+// arrives while a pull is running waits its turn rather than racing it.
+func (m *model) startOrDefer(branch *Branch, newName string) (tea.Model, tea.Cmd) {
+	action := switchAction{branch: *branch, newName: newName}
+	if m.gitBusy() {
+		m.pending = &action
+		m.status = "waiting for the current git command to finish..."
+		m.statusErr = false
+		return *m, nil
+	}
+	return m.startSwitch(action.branch, action.newName)
 }
 
 // startSwitch begins the git work for a picked branch.
 //
 // The picker stays open while it runs, so the work happens as a command and
 // the result comes back as a message.
-func (m *model) startSwitch(branch *Branch, newName string) (tea.Model, tea.Cmd) {
+func (m *model) startSwitch(branch Branch, newName string) (tea.Model, tea.Cmd) {
 	m.busy = true
-	m.status = "working..."
+	m.status = "switching to " + branch.Name + "..."
 	m.statusErr = false
+	m.switchStarted = time.Now()
 	root := m.root
-	action := switchAction{branch: *branch, newName: newName}
+	action := switchAction{branch: branch, newName: newName}
 	return *m, switchCmd(root, action)
 }
 
@@ -417,27 +555,38 @@ type switchAction struct {
 	newName string
 }
 
-// switchCmd runs the switch, the pull, and the new branch when there is one.
+// switchCmd runs the switch, and the new branch when there is one.
 //
-// A branch with no upstream fails its pull, and that is the branch's own
-// business rather than a reason to leave the picker, so the pull failure is
-// reported on its own.
+// The pull is not here: it is the slow part, and it runs afterwards in the
+// background so that the picker is usable while it waits.
 func switchCmd(root string, action switchAction) tea.Cmd {
 	return func() tea.Msg {
 		if err := switchBranch(action.branch, root); err != nil {
 			return switchDoneMsg{err: err}
 		}
-		if action.newName == "" {
-			if err := pull(root); err != nil {
-				return switchDoneMsg{branch: action.branch.Name, pullErr: err}
+		if action.newName != "" {
+			if err := createBranch(action.newName, root); err != nil {
+				return switchDoneMsg{branch: action.branch.Name, err: err}
 			}
-			return switchDoneMsg{branch: action.branch.Name}
+			return switchDoneMsg{branch: action.newName, newName: action.newName}
 		}
-		if err := createBranch(action.newName, root); err != nil {
-			return switchDoneMsg{branch: action.branch.Name, err: err}
-		}
-		return switchDoneMsg{branch: action.newName, newName: action.newName}
+		return switchDoneMsg{branch: action.branch.Name}
 	}
+}
+
+// pullCmd pulls the branch that was just switched to.
+func pullCmd(root, branch string) tea.Cmd {
+	return func() tea.Msg {
+		if err := pull(root); err != nil {
+			return pullDoneMsg{branch: branch, err: err}
+		}
+		return pullDoneMsg{branch: branch}
+	}
+}
+
+// gitBusy reports whether a git command is running.
+func (m model) gitBusy() bool {
+	return m.busy || m.pulling
 }
 
 // selectedName is the branch the pointer is on.

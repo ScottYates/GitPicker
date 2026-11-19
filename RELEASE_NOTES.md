@@ -1,13 +1,36 @@
-## git-picker v1.1
+## git-picker v1.2
 
-A standalone Windows build of the branch picker. One file, no runtime to
-install, and the branch list is on screen in about 41 ms.
+Fixes the control keys, and takes the slow pull off the critical path.
 
-### What it does
+### The control keys
 
-Finds the repository root, lists local and remote branches in a
-fuzzy-selectable menu, switches to the one you pick and pulls. Remote-only
-branches are offered and checked out with `--track`.
+`ctrl+s` and `ctrl+n` did nothing, and pressing a control key seemed to
+change the display instead.
+
+The cause was in how the terminal delivers the key. When a console has
+virtual terminal input enabled, `ctrl+n` arrives as the raw control byte
+`0x0e` with no modifier flag attached. Bubbletea only turns that into the
+`ctrl+n` key when the console reports that ctrl is held, so the byte came
+through as an ordinary character and was typed into the search box. The
+search box then filtered the list down to nothing, which is why the display
+changed, why the new branch prompt refused to open (there was nothing left
+to branch from) and why `ctrl+s` did not sort anything.
+
+The picker now works out which combination a control character stands for
+and acts on it, and a control character can no longer end up in the search
+box or in a branch name.
+
+### Switching is instant now
+
+`git pull` is the slow part of a switch, because it is the one that talks to
+the network. It used to hold up the whole picker, and every key was ignored
+while it ran, so a `ctrl+n` pressed during the wait was simply thrown away.
+
+- The branch is switched first, and the list updates straight away.
+- The pull runs in the background, and the status line says when it lands.
+- The keys keep working while it runs. Escape always leaves, even then.
+- A switch that arrives during a pull waits its turn rather than racing it.
+- The status line shows how long the switch and the pull each took.
 
 ### Keys
 
@@ -20,15 +43,6 @@ branches are offered and checked out with `--track`.
 | ctrl+n | switch to the highlighted branch and make a new one from it |
 | enter | switch to the highlighted branch and pull |
 | esc | leave |
-
-### Notes
-
-- The fetch runs in the background, so the list is on screen without waiting
-  for the network, and it refreshes when the fetch lands.
-- Switching does not close the picker. The branch is switched, the list is
-  rebuilt and the picker carries on, so branches can be worked through one
-  after another.
-- The list fills the screen and reflows when the window is resized.
 
 ### Install
 

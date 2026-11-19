@@ -348,15 +348,103 @@ func TestCtrlCLeavesThePicker(t *testing.T) {
 	}
 }
 
-func TestKeysAreIgnoredWhileGitIsWorking(t *testing.T) {
+func TestKeysAreHeldBackWhileGitIsWorking(t *testing.T) {
 	m := testModel("master", "feature/x")
 	m.busy = true
 	m.cursor = 0
-	next, _ := m.handleKey(keyMsg("down"))
+
+	// A switch that arrives while git is working waits its turn, because
+	// git will not let two commands touch the index at once.
+	next, cmd := m.handleKey(keyMsg("enter"))
+	m = next.(model)
+	if cmd != nil {
+		t.Fatal("a second switch should not have been started")
+	}
+	if m.pending == nil {
+		t.Fatal("the switch should have been held back")
+	}
+	if m.pending.branch.Name != "master" {
+		t.Fatalf("the wrong branch was held back: %q", m.pending.branch.Name)
+	}
+}
+
+func TestEscapeLeavesEvenWhileGitIsWorking(t *testing.T) {
+	m := testModel("master")
+	m.busy = true
+	m.pulling = true
+
+	next, cmd := m.handleKey(keyMsg("esc"))
+	m = next.(model)
+	if cmd == nil {
+		t.Fatal("escape should quit the picker even while git is working")
+	}
+}
+
+func TestControlByteOpensTheNewBranchPrompt(t *testing.T) {
+	// A console in virtual terminal input mode hands over the raw control
+	// byte with no modifier flag, so ctrl+n arrives as an ordinary rune.
+	m := testModel("master", "feature/x")
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{0x0e}})
 	m = next.(model)
 
-	if m.cursor != 0 {
-		t.Fatalf("the pointer moved while git was working: %d", m.cursor)
+	if m.phase != phaseName {
+		t.Fatalf("ctrl+n should open the name prompt, got phase %d", m.phase)
+	}
+}
+
+func TestControlByteTogglesTheSort(t *testing.T) {
+	m := testModel("master", "feature/x")
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{0x13}})
+	m = next.(model)
+
+	if m.sortMode != sortName {
+		t.Fatalf("ctrl+s should toggle the sort, got %q", m.sortMode)
+	}
+}
+
+func TestControlByteNeverReachesTheSearchBox(t *testing.T) {
+	// A stray control byte in the search box filters the list away, which
+	// leaves nothing to select and makes the app look broken.
+	m := testModel("master", "feature/x")
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{0x0e}})
+	m = next.(model)
+
+	if m.query != "" {
+		t.Fatalf("the search box should be empty, got %q", m.query)
+	}
+	if len(m.matches) != 2 {
+		t.Fatalf("the list should be whole, got %d rows", len(m.matches))
+	}
+}
+
+func TestControlKeyName(t *testing.T) {
+	cases := []struct {
+		r    rune
+		want string
+	}{
+		{0x01, "ctrl+a"},
+		{0x0e, "ctrl+n"},
+		{0x13, "ctrl+s"},
+		{0x1a, "ctrl+z"},
+		{0x09, "tab"},
+		{0x0d, "enter"},
+		{0x1b, "esc"},
+		{0x7f, "backspace"},
+	}
+	for _, c := range cases {
+		got, ok := controlKeyName(c.r)
+		if !ok || got != c.want {
+			t.Errorf("controlKeyName(%#x): got %q (%v), want %q", c.r, got, ok, c.want)
+		}
+	}
+	if _, ok := controlKeyName('a'); ok {
+		t.Error("a printable character is not a control key")
+	}
+}
+
+func TestStripControl(t *testing.T) {
+	if got := stripControl("ma\x0ein"); got != "main" {
+		t.Fatalf("stripControl: got %q, want %q", got, "main")
 	}
 }
 

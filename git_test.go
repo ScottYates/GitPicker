@@ -239,7 +239,9 @@ func TestSwitchCmdSwitchesAndCreatesABranch(t *testing.T) {
 	}
 }
 
-func TestSwitchCmdReportsAPullFailureWithoutFailing(t *testing.T) {
+func TestSwitchCmdDoesNotPull(t *testing.T) {
+	// The pull is the slow part, so it runs afterwards in the background
+	// rather than holding up the switch.
 	repo := makeTestRepo(t)
 
 	msg := switchCmd(repo, switchAction{branch: Branch{Name: "master"}})()
@@ -247,18 +249,31 @@ func TestSwitchCmdReportsAPullFailureWithoutFailing(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected message %T", msg)
 	}
-	// The branch has no upstream, so the pull fails. The switch worked, so
-	// that is reported on its own and the picker stays open.
 	if done.err != nil {
 		t.Fatalf("the switch itself should not have failed: %v", done.err)
-	}
-	if done.pullErr == nil {
-		t.Fatal("the pull failure should have been reported")
 	}
 	if done.branch != "master" {
 		t.Fatalf("branch: got %q, want %q", done.branch, "master")
 	}
 	if got := currentBranch(repo); got != "master" {
 		t.Fatalf("the repo should be on master, got %q", got)
+	}
+}
+
+func TestPullCmdReportsAFailureWithoutCrashing(t *testing.T) {
+	// The branch has no upstream, so the pull fails. That is reported on
+	// its own and the picker stays open.
+	repo := makeTestRepo(t)
+
+	msg := pullCmd(repo, "master")()
+	done, ok := msg.(pullDoneMsg)
+	if !ok {
+		t.Fatalf("unexpected message %T", msg)
+	}
+	if done.err == nil {
+		t.Fatal("the pull failure should have been reported")
+	}
+	if done.branch != "master" {
+		t.Fatalf("branch: got %q, want %q", done.branch, "master")
 	}
 }
