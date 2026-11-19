@@ -170,17 +170,18 @@ func TestPickerCommitsTheSelectedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The commit is done, so the picker asks whether to push it.
 	deadline := time.Now().Add(5 * time.Second)
-	committed := false
+	asked := false
 	for time.Now().Before(deadline) {
-		if strings.Contains(output.String(), "Committed a commit message") {
-			committed = true
+		if strings.Contains(output.String(), "Push main?") {
+			asked = true
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !committed {
-		t.Fatalf("the commit did not finish. the picker said:\n%s", visible(output.String()))
+	if !asked {
+		t.Fatalf("the push was not offered. the picker said:\n%s", visible(output.String()))
 	}
 
 	// The commit is really in the repository, and only the chosen file is
@@ -204,6 +205,107 @@ func TestPickerCommitsTheSelectedFile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, historyFileName)); err != nil {
 		t.Fatalf("the history file was not written: %v", err)
+	}
+
+	// Saying no to the push leaves the commit alone and goes back to the
+	// list.
+	if _, err := input.Write([]byte("n")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the list to come back", func() bool {
+		return strings.Contains(output.String(), "Switch to branch")
+	})
+
+	// Escape leaves.
+	if _, err := input.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-results:
+	case err := <-failures:
+		t.Fatalf("the picker failed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("escape did not close the picker")
+	}
+}
+
+func TestAnsweringYesPushesTheCommitToTheRemote(t *testing.T) {
+	withHome(t)
+
+	repo, remote := makeTestRepoWithRemote(t)
+	if err := os.WriteFile(filepath.Join(repo, "pushed.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output, input, results, failures := runPicker(t, repo)
+	defer input.Close()
+
+	time.Sleep(400 * time.Millisecond)
+
+	// Ctrl+C opens the file selection.
+	if _, err := input.Write([]byte{0x03}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the file list", func() bool {
+		return strings.Contains(output.String(), "Select files to commit")
+	})
+	waitFor(t, "the files to be listed", func() bool {
+		return strings.Contains(output.String(), "pushed.txt")
+	})
+
+	// Space selects the file the pointer is on, enter opens the message.
+	if _, err := input.Write([]byte(" ")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the file to be selected", func() bool {
+		return strings.Contains(output.String(), "1 selected")
+	})
+	if _, err := input.Write([]byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the message box", func() bool {
+		return strings.Contains(output.String(), "Commit message")
+	})
+
+	if _, err := input.Write([]byte("a pushed commit")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if _, err := input.Write([]byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The push is offered. The branch has an upstream here, so the
+	// question names it.
+	waitFor(t, "the push to be offered", func() bool {
+		return strings.Contains(output.String(), "Push main to origin/main?")
+	})
+
+	// Saying yes pushes it.
+	if _, err := input.Write([]byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the push to finish", func() bool {
+		return strings.Contains(output.String(), "Pushed main")
+	})
+
+	// And the remote really has the commit, not just the local repository.
+	subject := strings.TrimSpace(runGitIn(t, remote, "log", "-1", "--format=%s", "main"))
+	if subject != "a pushed commit" {
+		t.Fatalf("the remote should have the commit, got %q", subject)
+	}
+	files := runGitIn(t, remote, "show", "--name-only", "--format=", "main")
+	if !strings.Contains(files, "pushed.txt") {
+		t.Fatalf("the remote should have the file, got %q", files)
+	}
+
+	// The picker is still running.
+	select {
+	case final := <-results:
+		t.Fatalf("the picker closed itself after pushing: %v", final)
+	case err := <-failures:
+		t.Fatalf("the picker failed: %v", err)
+	default:
 	}
 
 	// Escape leaves.

@@ -99,6 +99,7 @@ const (
 	phaseName
 	phaseFiles
 	phaseMessage
+	phasePushConfirm
 )
 
 // fetchResult is what the background fetch reports back.
@@ -206,6 +207,9 @@ type model struct {
 	messagePos   int
 	history      []string
 	historyIndex int
+
+	// pushChoice is the yes or no answer to the push question.
+	pushChoice int
 
 	// pulling is true while a background pull is running.
 	pulling bool
@@ -420,11 +424,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "commit failed: " + firstLine(msg.err.Error())
 			m.statusErr = true
-		} else {
-			m.status = fmt.Sprintf("Committed %s (%d file%s)", msg.message, msg.files, plural(msg.files))
-			m.statusErr = false
+			return m.resumePending()
 		}
-		return m.resumePending()
+		m.status = fmt.Sprintf("Committed %s (%d file%s)", msg.message, msg.files, plural(msg.files))
+		m.statusErr = false
+		// Ask whether it should be pushed. The picker stays open either
+		// way, so the question is asked rather than assumed.
+		m.phase = phasePushConfirm
+		m.pushChoice = 0
+		return m, nil
 
 	case pushDoneMsg:
 		m.busy = false
@@ -743,6 +751,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleFilesKey(msg)
 	case phaseMessage:
 		return m.handleMessageKey(msg)
+	case phasePushConfirm:
+		return m.handlePushConfirmKey(msg)
 	}
 	return m.handleListKey(msg)
 }
@@ -1075,6 +1085,45 @@ func (m *model) recallHistory(step int) {
 	m.messagePos = len([]rune(m.messageBuf))
 }
 
+// handlePushConfirmKey acts on a key press while the push question is on
+// screen.
+//
+// The pointer starts on yes, because the usual reason for asking is that the
+// commit should go out. Escape and n leave it alone.
+func (m model) handlePushConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := keyName(msg)
+
+	switch key {
+	case "esc", "n":
+		m.phase = phaseList
+		m.pushChoice = 0
+		return m.resumePending()
+	case "y":
+		m.phase = phaseList
+		m.pushChoice = 0
+		return m.startOrDefer(pendingAction{kind: actionPush})
+	case "up":
+		if m.pushChoice > 0 {
+			m.pushChoice--
+		}
+		return m, nil
+	case "down":
+		if m.pushChoice < 1 {
+			m.pushChoice++
+		}
+		return m, nil
+	case "enter":
+		push := m.pushChoice == 0
+		m.phase = phaseList
+		m.pushChoice = 0
+		if push {
+			return m.startOrDefer(pendingAction{kind: actionPush})
+		}
+		return m.resumePending()
+	}
+	return m, nil
+}
+
 // selectedPaths are the files that are ticked.
 func (m model) selectedPaths() []string {
 	var paths []string
@@ -1157,8 +1206,47 @@ func (m model) View() string {
 		return m.viewFiles()
 	case phaseMessage:
 		return m.viewMessage()
+	case phasePushConfirm:
+		return m.viewPushConfirm()
 	}
 	return m.viewList()
+}
+
+// viewPushConfirm asks whether the commit should be pushed.
+func (m model) viewPushConfirm() string {
+	var b strings.Builder
+
+	question := "Push " + m.current + "?"
+	if upstream := m.upstreamFor(m.current); upstream != "" {
+		question = "Push " + m.current + " to " + upstream + "?"
+	}
+	if m.repoName != "" {
+		question = m.repoName + "  " + question
+	}
+	b.WriteString("? " + question + "\n")
+
+	yes := "  yes"
+	no := "  no"
+	if m.pushChoice == 0 {
+		yes = pointer + " yes"
+	} else {
+		no = pointer + " no"
+	}
+	b.WriteString(yes + "\n")
+	b.WriteString(no + "\n")
+	b.WriteString(styleInfo.Render("y or n, enter to choose, esc to skip"))
+	return b.String()
+}
+
+// upstreamFor is the remote branch a local branch tracks, or "" when it has
+// none.
+func (m model) upstreamFor(name string) string {
+	for _, branch := range m.branches {
+		if branch.Name == name {
+			return branch.Upstream
+		}
+	}
+	return ""
 }
 
 // viewList draws the branch list.

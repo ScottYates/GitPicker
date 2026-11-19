@@ -2,7 +2,7 @@ package main
 
 // git-picker: an interactive git branch picker that switches and pulls.
 //
-// Version: v1.3
+// Version: v1.4
 //
 // Finds the repository root, lists local and remote branches in a
 // fuzzy-selectable menu, switches to the chosen branch and pulls.
@@ -28,7 +28,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const version = "v1.3"
+const version = "v1.4"
 
 // exitCancelled is the exit code for a cancelled picker.
 const exitCancelled = 130

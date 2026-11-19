@@ -289,6 +289,83 @@ func TestSpaceIsTypedIntoTheMessage(t *testing.T) {
 	}
 }
 
+func TestASuccessfulCommitAsksAboutThePush(t *testing.T) {
+	m := testModel("master")
+	m.phase = phaseList
+
+	next, _ := m.Update(commitDoneMsg{message: "a message", files: 1})
+	m = next.(model)
+
+	if m.phase != phasePushConfirm {
+		t.Fatalf("the push should be offered, got phase %d", m.phase)
+	}
+	if m.pushChoice != 0 {
+		t.Fatal("yes should be the starting answer")
+	}
+}
+
+func TestAFailedCommitDoesNotAskAboutThePush(t *testing.T) {
+	m := testModel("master")
+	m.phase = phaseList
+
+	next, _ := m.Update(commitDoneMsg{message: "a message", err: os.ErrInvalid})
+	m = next.(model)
+
+	if m.phase != phaseList {
+		t.Fatalf("a failed commit should not offer a push, got phase %d", m.phase)
+	}
+}
+
+func TestAnsweringYesPushes(t *testing.T) {
+	m := testModel("master")
+	m.phase = phasePushConfirm
+
+	next, cmd := m.handleKey(keyMsg("y"))
+	m = next.(model)
+
+	if cmd == nil {
+		t.Fatal("yes should have started the push")
+	}
+	if m.phase != phaseList {
+		t.Fatalf("the picker should be back on the list, got phase %d", m.phase)
+	}
+}
+
+func TestAnsweringNoDoesNotPush(t *testing.T) {
+	m := testModel("master")
+	m.phase = phasePushConfirm
+
+	next, cmd := m.handleKey(keyMsg("n"))
+	m = next.(model)
+
+	if cmd != nil {
+		t.Fatal("no should not have started anything")
+	}
+	if m.phase != phaseList {
+		t.Fatalf("the picker should be back on the list, got phase %d", m.phase)
+	}
+}
+
+func TestThePushQuestionCanBeAnsweredWithTheArrowKeys(t *testing.T) {
+	m := testModel("master")
+	m.phase = phasePushConfirm
+
+	// Down moves to no, and enter takes it.
+	next, _ := m.handleKey(keyMsg("down"))
+	m = next.(model)
+	if m.pushChoice != 1 {
+		t.Fatalf("down should have moved to no, got %d", m.pushChoice)
+	}
+	next, cmd := m.handleKey(keyMsg("enter"))
+	m = next.(model)
+	if cmd != nil {
+		t.Fatal("no should not have started anything")
+	}
+	if m.phase != phaseList {
+		t.Fatalf("the picker should be back on the list, got phase %d", m.phase)
+	}
+}
+
 func TestStatusFiles(t *testing.T) {
 	repo := makeTestRepo(t)
 

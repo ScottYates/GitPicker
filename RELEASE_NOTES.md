@@ -1,24 +1,30 @@
-## git-picker v1.3
+## git-picker v1.4
 
-Commit and push from inside the picker.
+Ask before pushing, so a commit goes out when you want it to.
 
-### Ctrl+C commits
+### The push question
 
-Ctrl+C opens the changed files, you pick the ones you want with space, and
-then the commit message is asked for. Only the files you ticked go into the
-commit, so anything else that happened to be staged is left alone. The
-picker stays open afterwards, and the commit is confirmed in the status
-line.
+After a successful commit the picker stops and asks:
 
-### Ctrl+P pushes
+```
+? repo  Push main to origin/main?
 
-Ctrl+P pushes the current branch to its upstream and reports what happened.
+> yes
+  no
 
-### Commit message history
+y or n, enter to choose, esc to skip
+```
 
-The last ten commit messages are kept in `.git-picker-commit-history` in your
-home folder. Up and down in the message box walk back through them, and a
-message you use again moves to the front rather than appearing twice.
+Answer `y` and the commit is pushed. Answer `n`, or press escape, and it is
+left where it is. The arrow keys move the pointer and enter takes the
+answer, so the question can be answered without the keyboard shortcuts.
+
+The question names the upstream when the branch has one. A branch with no
+upstream just says `Push main?`, and the push fails in the status line if
+git refuses it.
+
+The picker stays open through all of it. Nothing closes until you press
+escape.
 
 ### Keys
 
@@ -32,10 +38,10 @@ message you use again moves to the front rather than appearing twice.
 | ctrl+c | commit: pick the files, then write the message |
 | ctrl+p | push the current branch |
 | enter | switch to the highlighted branch and pull |
+| y / n | answer the push question after a commit |
 | esc | leave |
 
-Ctrl+C is a commit key now, so Escape is the way out. Escape always leaves,
-even while git is working.
+Escape is the way out. Escape always leaves, even while git is working.
 
 ### Install
 

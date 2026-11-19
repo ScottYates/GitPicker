@@ -89,6 +89,23 @@ func makeTestRepo(t *testing.T) string {
 	return repo
 }
 
+// makeTestRepoWithRemote is makeTestRepo plus a bare remote that main
+// tracks, so that a push has somewhere to go.
+//
+// It returns the working repository and the bare remote.
+func makeTestRepoWithRemote(t *testing.T) (string, string) {
+	t.Helper()
+	repo := makeTestRepo(t)
+
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGitIn(t, t.TempDir(), "init", "--bare", "-q", remote)
+	runGitIn(t, repo, "remote", "add", "origin", remote)
+	// The first push sets the upstream that later pushes follow.
+	runGitIn(t, repo, "push", "-q", "-u", "origin", "main")
+
+	return repo, remote
+}
+
 func TestFindRepoRoot(t *testing.T) {
 	repo := makeTestRepo(t)
 
