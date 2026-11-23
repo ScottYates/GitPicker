@@ -32,6 +32,28 @@ func runPicker(t *testing.T, repo string) (*bytes.Buffer, *os.File, <-chan tea.M
 
 	m := newModel(repo, "repo", currentBranch(repo), branches, fetchCh, nil)
 
+	return startPicker(t, m)
+}
+
+// runPickerWithoutRepo starts the picker where there is no repository.
+//
+// It is the state the picker is in when it is started outside one, which
+// is when there may be a clone to do.
+func runPickerWithoutRepo(t *testing.T, dir string) (*bytes.Buffer, *os.File, <-chan tea.Model, chan error) {
+	t.Helper()
+
+	m := newModel("", filepath.Base(dir), "", nil, nil, nil)
+	m.cloneDir = dir
+	m.status = "not inside a git repository"
+	m.statusErr = true
+
+	return startPicker(t, m)
+}
+
+// startPicker runs a picker on a pipe and hands back the ends of it.
+func startPicker(t *testing.T, m model) (*bytes.Buffer, *os.File, <-chan tea.Model, chan error) {
+	t.Helper()
+
 	inReader, inWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +108,18 @@ func TestPickerStaysOpenAfterSwitching(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The output panel is the only screen that says this, so it cannot
+	// be confused with the command preview.
 	waitFor(t, "the switch to finish", func() bool {
+		return strings.Contains(output.String(), "esc closes the output")
+	})
+
+	// Closing the output brings the picker back, and the switch is
+	// reported in the status line.
+	if _, err := input.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the switch to be reported", func() bool {
 		return strings.Contains(output.String(), "Switched to main")
 	})
 
@@ -170,19 +203,10 @@ func TestPickerCommitsTheSelectedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The commit is done, so the picker asks whether to push it.
-	deadline := time.Now().Add(5 * time.Second)
-	asked := false
-	for time.Now().Before(deadline) {
-		if strings.Contains(output.String(), "Push main?") {
-			asked = true
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !asked {
-		t.Fatalf("the push was not offered. the picker said:\n%s", visible(output.String()))
-	}
+	// The commit is done, so what git said about it is on screen.
+	waitFor(t, "the commit output", func() bool {
+		return strings.Contains(output.String(), "esc closes the output")
+	})
 
 	// The commit is really in the repository, and only the chosen file is
 	// in it.
@@ -206,6 +230,14 @@ func TestPickerCommitsTheSelectedFile(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, historyFileName)); err != nil {
 		t.Fatalf("the history file was not written: %v", err)
 	}
+
+	// Closing the output leads to the question about pushing.
+	if _, err := input.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the push to be offered", func() bool {
+		return strings.Contains(output.String(), "Push main?")
+	})
 
 	// Saying no to the push leaves the commit alone and goes back to the
 	// list.
@@ -275,6 +307,15 @@ func TestAnsweringYesPushesTheCommitToTheRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The commit output comes first, and closing it leads to the question
+	// about pushing.
+	waitFor(t, "the commit output", func() bool {
+		return strings.Contains(output.String(), "esc closes the output")
+	})
+	if _, err := input.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+
 	// The push is offered. The branch has an upstream here, so the
 	// question names it.
 	waitFor(t, "the push to be offered", func() bool {
@@ -285,8 +326,10 @@ func TestAnsweringYesPushesTheCommitToTheRemote(t *testing.T) {
 	if _, err := input.Write([]byte("y")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the push to finish", func() bool {
-		return strings.Contains(output.String(), "Pushed main")
+	// The push panel is the one that names the push, and nothing else
+	// on screen does.
+	waitFor(t, "the push output", func() bool {
+		return strings.Contains(output.String(), "git push")
 	})
 
 	// And the remote really has the commit, not just the local repository.
@@ -307,6 +350,15 @@ func TestAnsweringYesPushesTheCommitToTheRemote(t *testing.T) {
 		t.Fatalf("the picker failed: %v", err)
 	default:
 	}
+
+	// The push output is still on screen, so the first escape closes it
+	// and the second leaves.
+	if _, err := input.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the output to be closed", func() bool {
+		return strings.Contains(output.String(), "Switch to branch")
+	})
 
 	// Escape leaves.
 	if _, err := input.Write([]byte("\x1b")); err != nil {
@@ -401,7 +453,16 @@ func TestAPushToAPlainRemoteAsksNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	waitFor(t, "the push to finish", func() bool {
+	waitFor(t, "the push output", func() bool {
+		return strings.Contains(output.String(), "esc closes the output")
+	})
+
+	// Closing the output brings the picker back, and there is no pull
+	// request page to ask about.
+	if _, err := input.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the list to come back", func() bool {
 		return strings.Contains(output.String(), "Pushed main")
 	})
 
@@ -418,6 +479,80 @@ func TestAPushToAPlainRemoteAsksNothing(t *testing.T) {
 	default:
 	}
 
+	if _, err := input.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-results:
+	case err := <-failures:
+		t.Fatalf("the picker failed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("escape did not close the picker")
+	}
+}
+
+func TestThePickerClonesIntoTheCurrentDirectory(t *testing.T) {
+	withHome(t)
+
+	// A repository to clone from, and a folder with no repository in it
+	// to clone into.
+	_, remote := makeTestRepoWithRemote(t)
+	dir := t.TempDir()
+
+	output, input, results, failures := runPickerWithoutRepo(t, dir)
+	defer input.Close()
+
+	time.Sleep(400 * time.Millisecond)
+
+	// There is no repository, and the picker says so.
+	waitFor(t, "the empty state", func() bool {
+		return strings.Contains(output.String(), "not inside a git repository")
+	})
+
+	// Ctrl+G asks for the address to clone.
+	if _, err := input.Write([]byte{0x07}); err != nil { // ctrl+g
+		t.Fatal(err)
+	}
+	waitFor(t, "the clone prompt", func() bool {
+		return strings.Contains(output.String(), "Clone:")
+	})
+
+	// The address is typed and confirmed.
+	if _, err := input.Write([]byte(remote)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if _, err := input.Write([]byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The clone runs, and what git said about it is on screen.
+	waitFor(t, "the clone output", func() bool {
+		return strings.Contains(output.String(), "esc closes the output")
+	})
+
+	// The folder is there, with the branches in it.
+	folder := filepath.Join(dir, repoFolder(remote))
+	if !pathExists(folder) {
+		t.Fatalf("the clone should have made %q", folder)
+	}
+	branches, err := listBranches(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(branches) == 0 {
+		t.Fatal("the clone should have the branches in it")
+	}
+
+	// And the picker is in the new repository.
+	if _, err := input.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the new repository to be shown", func() bool {
+		return strings.Contains(output.String(), repoFolder(remote))
+	})
+
+	// Escape leaves.
 	if _, err := input.Write([]byte("\x1b")); err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +585,16 @@ func TestPickerCreatesABranchAndStaysOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The branch is made, and what git said about it is on screen.
 	waitFor(t, "the branch to be created", func() bool {
+		return strings.Contains(output.String(), "esc closes the output")
+	})
+
+	// Closing the output brings the picker back.
+	if _, err := input.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the list to come back", func() bool {
 		return strings.Contains(output.String(), "Created and switched to my-branch")
 	})
 

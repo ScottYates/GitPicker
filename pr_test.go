@@ -165,6 +165,19 @@ func TestAPushWithAPullRequestAsksAboutOpeningIt(t *testing.T) {
 	next, _ := m.Update(pushDoneMsg{prURL: "https://github.com/owner/repo/pull/42"})
 	m = next.(model)
 
+	// The output comes first, and the question about the page comes
+	// after it has been read.
+	if m.phase != phaseOutput {
+		t.Fatalf("the output should be on screen, got phase %d", m.phase)
+	}
+	if m.afterOutput != afterPRConfirm {
+		t.Fatalf("the page should be offered after the output, got %q", m.afterOutput)
+	}
+
+	// Closing the output leads to the question.
+	next, _ = m.handleKey(keyMsg("esc"))
+	m = next.(model)
+
 	if m.phase != phasePRConfirm {
 		t.Fatalf("the picker should ask about the page, got phase %d", m.phase)
 	}
@@ -183,8 +196,12 @@ func TestAPushWithNothingToOpenAsksNothing(t *testing.T) {
 	next, _ := m.Update(pushDoneMsg{})
 	m = next.(model)
 
-	if m.phase != phaseList {
-		t.Fatalf("there is nothing to open, so nothing should be asked, got phase %d", m.phase)
+	// The output is still shown, but there is no page to ask about.
+	if m.phase != phaseOutput {
+		t.Fatalf("the output should be on screen, got phase %d", m.phase)
+	}
+	if m.afterOutput != afterNothing {
+		t.Fatalf("there is nothing to ask about, got %q", m.afterOutput)
 	}
 }
 

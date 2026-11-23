@@ -24,6 +24,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -46,7 +47,7 @@ const (
 	// list: the message, the search line, the panel and the instructions.
 	chromeRows = 3 + previewRows
 
-	instruction = "type to filter, arrows/pgup/pgdn, ctrl+s sort, ctrl+n new branch, ctrl+c commit, ctrl+p push, esc exits"
+	instruction = "type to filter, arrows/pgup/pgdn, ctrl+s sort, ctrl+n new branch, ctrl+c commit, ctrl+p push, ctrl+g clone, esc exits"
 
 	filesInstruction   = "arrows to move, space to select, enter to continue, esc to cancel"
 	messageInstruction = "enter to commit, up/down for the last messages, esc to go back"
@@ -60,8 +61,9 @@ const (
 func instructionFor(width int) string {
 	choices := []string{
 		instruction,
-		"type to filter, pgup/pgdn, ctrl+s sort, ctrl+n new, ctrl+c commit, ctrl+p push, esc exits",
-		"pgup/pgdn, ctrl+s sort, ctrl+n new, ctrl+c commit, ctrl+p push, esc exits",
+		"type to filter, pgup/pgdn, ctrl+s sort, ctrl+n new, ctrl+c commit, ctrl+p push, ctrl+g clone, esc exits",
+		"pgup/pgdn, ctrl+s sort, ctrl+n new, ctrl+c commit, ctrl+p push, ctrl+g clone, esc exits",
+		"ctrl+c commit, ctrl+p push, ctrl+g clone, esc exits",
 	}
 	for _, choice := range choices {
 		if len(choice) <= width {
@@ -102,6 +104,17 @@ const (
 	phasePushConfirm
 	phasePRConfirm
 	phaseError
+	phaseOutput
+	phaseClone
+	phaseClipboard
+	phaseRemove
+)
+
+// What happens once the git output has been closed.
+const (
+	afterNothing     = ""
+	afterPushConfirm = "push"
+	afterPRConfirm   = "pr"
 )
 
 // fetchResult is what the background fetch reports back.
@@ -119,12 +132,14 @@ type switchDoneMsg struct {
 	branch  string
 	newName string
 	err     error
+	output  string
 }
 
 // pullDoneMsg reports the result of a background pull.
 type pullDoneMsg struct {
 	branch string
 	err    error
+	output string
 }
 
 // filesLoadedMsg carries the files git has changes in.
@@ -138,11 +153,23 @@ type commitDoneMsg struct {
 	message string
 	files   int
 	err     error
+	output  string
 }
+
+// cloneDoneMsg reports the result of a clone, and the folder it went into.
+type cloneDoneMsg struct {
+	target string
+	err    error
+	output string
+}
+
+// clipboardMsg carries the address that was found on the clipboard.
+type clipboardMsg struct{ address string }
 
 // pushDoneMsg reports the result of a push.
 type pushDoneMsg struct {
-	err error
+	err    error
+	output string
 
 	// prURL is the address of the pull request page, when the push was to
 	// GitHub and there was a page to open.
@@ -229,6 +256,26 @@ type model struct {
 	// yes or no answer to the question about opening it.
 	prURL    string
 	prChoice int
+
+	// The git output of the work in flight, and the commands that wrote
+	// it. It is shown when the work is done.
+	output       string
+	outputTitle  string
+	outputScroll int
+
+	// afterOutput is what happens once the output has been closed.
+	afterOutput string
+
+	// The clone address being typed, the address found on the clipboard,
+	// and the folder to remove before a fresh clone.
+	cloneBuf     string
+	clonePos     int
+	cloneAddress string
+	clipAddress  string
+	removeTarget string
+
+	// cloneDir is the directory a clone goes into.
+	cloneDir string
 
 	// fatal is the failure that ends the picker, if there is one.
 	//
@@ -348,7 +395,15 @@ func (m *model) scrollIntoView() {
 }
 
 // Init starts the background fetch and waits for it.
+//
+// The clipboard is only looked at when there is no repository, because
+// that is the only time a clone from it makes sense.
 func (m model) Init() tea.Cmd {
+	if m.root == "" {
+		return func() tea.Msg {
+			return clipboardMsg{address: readClipboard()}
+		}
+	}
 	ch := m.fetchCh
 	return func() tea.Msg {
 		result := <-ch
@@ -394,8 +449,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectByName(selected)
 		if msg.newName != "" {
 			m.status = fmt.Sprintf("Created and switched to %s (%.1fs)", msg.newName, time.Since(m.switchStarted).Seconds())
+			m.addOutput("git switch -c "+msg.newName, msg.output)
 		} else {
 			m.status = fmt.Sprintf("Switched to %s (%.1fs)", msg.branch, time.Since(m.switchStarted).Seconds())
+			m.addOutput("git switch "+msg.branch, msg.output)
 		}
 		m.statusErr = false
 		// The pull is the slow part, so it runs in the background and the
@@ -407,6 +464,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Switched to " + msg.branch + ", pulling..."
 			return m, pullCmd(m.root, msg.branch)
 		}
+		// The switch and the pull are one thing that was asked for, so
+		// they are shown together once the work is done.
+		m.showOutput()
 		return m.resumePending()
 
 	case pullDoneMsg:
@@ -416,6 +476,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = fmt.Sprintf("Pulled %s (%.1fs)", msg.branch, time.Since(m.pullStarted).Seconds())
 		m.statusErr = false
+		m.addOutput("git pull", msg.output)
+		m.showOutput()
 		return m.resumePending()
 
 	case filesLoadedMsg:
@@ -444,10 +506,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = fmt.Sprintf("Committed %s (%d file%s)", msg.message, msg.files, plural(msg.files))
 		m.statusErr = false
-		// Ask whether it should be pushed. The picker stays open either
-		// way, so the question is asked rather than assumed.
-		m.phase = phasePushConfirm
-		m.pushChoice = 0
+		m.addOutput("git commit", msg.output)
+		// The output is shown first, and the question about pushing comes
+		// after it has been read.
+		m.afterOutput = afterPushConfirm
+		m.showOutput()
+		return m, nil
+
+	case cloneDoneMsg:
+		m.busy = false
+		if msg.err != nil {
+			return m.fail(msg.err)
+		}
+		m.addOutput("git clone", msg.output)
+		// The picker moves into the repository that was just cloned, so
+		// the branches in it are the ones on offer.
+		if err := m.enterRepo(msg.target); err != nil {
+			return m.fail(err)
+		}
+		m.status = "Cloned into " + msg.target
+		m.statusErr = false
+		m.showOutput()
+		return m, nil
+
+	case clipboardMsg:
+		// The clipboard is only looked at when there is no repository,
+		// because that is the only time a clone makes sense.
+		if m.root != "" {
+			return m, nil
+		}
+		address := gitAddress(msg.address)
+		if address == "" {
+			return m, nil
+		}
+		m.clipAddress = address
+		m.phase = phaseClipboard
 		return m, nil
 
 	case pushDoneMsg:
@@ -457,14 +550,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = "Pushed " + m.current
 		m.statusErr = false
+		m.addOutput("git push", msg.output)
 		// A push to GitHub comes with the address of a pull request
-		// page, and the user is asked whether to open it.
+		// page, and the user is asked whether to open it. The question
+		// comes after the output has been read.
 		if msg.prURL != "" {
-			m.phase = phasePRConfirm
 			m.prURL = msg.prURL
-			m.prChoice = 0
+			m.afterOutput = afterPRConfirm
+			m.showOutput()
 			return m, nil
 		}
+		m.showOutput()
 		return m.resumePending()
 
 	case browserDoneMsg:
@@ -500,6 +596,51 @@ func plural(count int) string {
 		return ""
 	}
 	return "s"
+}
+
+// addOutput adds what a git command said to the output on screen.
+//
+// The commands are named as well, because the output of a switch and the
+// output of the pull that follows it are shown together and it should be
+// clear that both are there.
+func (m *model) addOutput(title string, output string) {
+	if output == "" {
+		return
+	}
+	if m.output != "" {
+		m.output += "\n\n"
+	}
+	m.output += output
+	if m.outputTitle == "" {
+		m.outputTitle = title
+		return
+	}
+	m.outputTitle += ", " + title
+}
+
+// showOutput puts the git output on screen.
+func (m *model) showOutput() {
+	m.phase = phaseOutput
+	m.outputScroll = 0
+}
+
+// enterRepo moves the picker into a repository.
+//
+// It is used after a clone, so the branches on offer are the ones in the
+// repository that was just cloned.
+func (m *model) enterRepo(root string) error {
+	branches, err := listBranches(root)
+	if err != nil {
+		return err
+	}
+	m.root = root
+	m.repoName = repoLabel(root)
+	m.current = currentBranch(root)
+	m.query = ""
+	m.cursor = 0
+	m.offset = 0
+	m.setBranches(branches)
+	return nil
 }
 
 // fail records a failure that ends the picker.
@@ -571,6 +712,7 @@ func (m *model) startSwitch(branch Branch, newName string) (tea.Model, tea.Cmd) 
 	m.status = "switching to " + branch.Name + "..."
 	m.statusErr = false
 	m.switchStarted = time.Now()
+	m.clearOutput()
 	root := m.root
 	action := switchAction{branch: branch, newName: newName}
 	return *m, switchCmd(root, action)
@@ -581,6 +723,7 @@ func (m *model) startCommit(message string, paths []string) (tea.Model, tea.Cmd)
 	m.busy = true
 	m.status = "committing..."
 	m.statusErr = false
+	m.clearOutput()
 	root := m.root
 	return *m, commitCmd(root, message, paths)
 }
@@ -590,8 +733,28 @@ func (m *model) startPush() (tea.Model, tea.Cmd) {
 	m.busy = true
 	m.status = "pushing " + m.current + "..."
 	m.statusErr = false
+	m.clearOutput()
 	root := m.root
 	return *m, pushCmd(root)
+}
+
+// startClone clones a repository into the current directory.
+func (m *model) startClone(address string) (tea.Model, tea.Cmd) {
+	m.busy = true
+	m.status = "cloning " + address + "..."
+	m.statusErr = false
+	m.clearOutput()
+	dir := m.cloneDir
+	return *m, cloneCmd(address, dir)
+}
+
+// clearOutput empties the output on screen, so that each thing that was
+// asked for starts with a clean sheet.
+func (m *model) clearOutput() {
+	m.output = ""
+	m.outputTitle = ""
+	m.outputScroll = 0
+	m.afterOutput = afterNothing
 }
 
 // gitBusy reports whether a git command is running.
@@ -605,36 +768,40 @@ func (m model) gitBusy() bool {
 // background so that the picker is usable while it waits.
 func switchCmd(root string, action switchAction) tea.Cmd {
 	return func() tea.Msg {
-		if err := switchBranch(action.branch, root); err != nil {
-			return switchDoneMsg{err: err}
+		output, err := switchBranch(action.branch, root)
+		if err != nil {
+			return switchDoneMsg{err: err, output: output}
 		}
 		if action.newName != "" {
-			if err := createBranch(action.newName, root); err != nil {
-				return switchDoneMsg{branch: action.branch.Name, err: err}
+			created, err := createBranch(action.newName, root)
+			if err != nil {
+				return switchDoneMsg{branch: action.branch.Name, err: err, output: output + created}
 			}
-			return switchDoneMsg{branch: action.newName, newName: action.newName}
+			return switchDoneMsg{branch: action.newName, newName: action.newName, output: output + created}
 		}
-		return switchDoneMsg{branch: action.branch.Name}
+		return switchDoneMsg{branch: action.branch.Name, output: output}
 	}
 }
 
 // pullCmd pulls the branch that was just switched to.
 func pullCmd(root, branch string) tea.Cmd {
 	return func() tea.Msg {
-		if err := pull(root); err != nil {
-			return pullDoneMsg{branch: branch, err: err}
+		output, err := pull(root)
+		if err != nil {
+			return pullDoneMsg{branch: branch, err: err, output: output}
 		}
-		return pullDoneMsg{branch: branch}
+		return pullDoneMsg{branch: branch, output: output}
 	}
 }
 
 // commitCmd commits the selected files with the message.
 func commitCmd(root, message string, paths []string) tea.Cmd {
 	return func() tea.Msg {
-		if err := commitFiles(root, message, paths); err != nil {
-			return commitDoneMsg{message: message, err: err}
+		output, err := commitFiles(root, message, paths)
+		if err != nil {
+			return commitDoneMsg{message: message, err: err, output: output}
 		}
-		return commitDoneMsg{message: message, files: len(paths)}
+		return commitDoneMsg{message: message, files: len(paths), output: output}
 	}
 }
 
@@ -643,9 +810,21 @@ func pushCmd(root string) tea.Cmd {
 	return func() tea.Msg {
 		output, err := push(root)
 		if err != nil {
-			return pushDoneMsg{err: err}
+			return pushDoneMsg{err: err, output: output}
 		}
-		return pushDoneMsg{prURL: pullRequestURL(root, output)}
+		return pushDoneMsg{output: output, prURL: pullRequestURL(root, output)}
+	}
+}
+
+// cloneCmd clones a repository into a directory.
+func cloneCmd(address, dir string) tea.Cmd {
+	return func() tea.Msg {
+		output, err := cloneRepo(address, dir)
+		if err != nil {
+			return cloneDoneMsg{err: err, output: output}
+		}
+		target, _ := cloneTarget(address, dir)
+		return cloneDoneMsg{target: target, output: output}
 	}
 }
 
@@ -655,7 +834,7 @@ func pushCmd(root string) tea.Cmd {
 // can take a moment on a big repository.
 func statusFilesCmd(root string) tea.Cmd {
 	return func() tea.Msg {
-		files, err := statusFiles(root)
+		files, _, err := statusFiles(root)
 		if err != nil {
 			return filesLoadedMsg{err: err}
 		}
@@ -816,6 +995,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handlePRConfirmKey(msg)
 	case phaseError:
 		return m.handleErrorKey(msg)
+	case phaseOutput:
+		return m.handleOutputKey(msg)
+	case phaseClone:
+		return m.handleCloneKey(msg)
+	case phaseClipboard:
+		return m.handleClipboardKey(msg)
+	case phaseRemove:
+		return m.handleRemoveKey(msg)
 	}
 	return m.handleListKey(msg)
 }
@@ -858,6 +1045,14 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.namePos = 0
 			m.nameErr = ""
 		}
+		return m, nil
+	case "ctrl+g":
+		// Ctrl+G clones a repository into the current directory.
+		m.phase = phaseClone
+		m.cloneBuf = ""
+		m.clonePos = 0
+		m.status = ""
+		m.statusErr = false
 		return m, nil
 	case "enter":
 		if len(m.matches) > 0 {
@@ -1130,6 +1325,161 @@ func (m model) handleMessageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleOutputKey acts on a key press while the git output is on screen.
+//
+// The output scrolls, and escape closes it. What happens after that depends
+// on what was being done, so it is kept for the closing.
+func (m model) handleOutputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := keyName(msg)
+
+	switch key {
+	case "esc":
+		m.phase = phaseList
+		step := m.afterOutput
+		m.afterOutput = afterNothing
+		m.output = ""
+		m.outputTitle = ""
+		switch step {
+		case afterPushConfirm:
+			m.phase = phasePushConfirm
+			m.pushChoice = 0
+			return m, nil
+		case afterPRConfirm:
+			m.phase = phasePRConfirm
+			m.prChoice = 0
+			return m, nil
+		}
+		return m.resumePending()
+	case "up":
+		if m.outputScroll > 0 {
+			m.outputScroll--
+		}
+		return m, nil
+	case "down":
+		m.outputScroll++
+		return m, nil
+	case "pgup":
+		m.outputScroll -= m.outputRows()
+		if m.outputScroll < 0 {
+			m.outputScroll = 0
+		}
+		return m, nil
+	case "pgdn":
+		m.outputScroll += m.outputRows()
+		return m, nil
+	}
+	return m, nil
+}
+
+// handleCloneKey acts on a key press while the clone address is being
+// typed.
+func (m model) handleCloneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := keyName(msg)
+
+	switch key {
+	case "esc":
+		m.phase = phaseList
+		m.cloneBuf = ""
+		m.clonePos = 0
+		return m, nil
+	case "enter":
+		address := strings.TrimSpace(m.cloneBuf)
+		if address == "" {
+			m.status = "a repository address is needed"
+			m.statusErr = true
+			return m, nil
+		}
+		// A folder that is already there has to go before a fresh clone,
+		// and that is worth asking about.
+		target, ok := cloneTarget(address, m.cloneDir)
+		if ok && pathExists(target) {
+			m.cloneAddress = address
+			m.removeTarget = target
+			m.phase = phaseRemove
+			return m, nil
+		}
+		m.cloneBuf = ""
+		m.clonePos = 0
+		return m.startClone(address)
+	case "backspace":
+		runes := []rune(m.cloneBuf)
+		if m.clonePos > 0 {
+			m.cloneBuf = string(runes[:m.clonePos-1]) + string(runes[m.clonePos:])
+			m.clonePos--
+		}
+		return m, nil
+	}
+
+	if msg.Type == tea.KeyRunes || isSpaceKey(msg) {
+		text := " "
+		if msg.Type == tea.KeyRunes {
+			text = stripControl(string(msg.Runes))
+		}
+		if text != "" {
+			runes := []rune(m.cloneBuf)
+			m.cloneBuf = string(runes[:m.clonePos]) + text + string(runes[m.clonePos:])
+			m.clonePos += len([]rune(text))
+		}
+	}
+	return m, nil
+}
+
+// handleClipboardKey acts on a key press while the clone found on the
+// clipboard is being offered.
+//
+// The pointer starts on yes, because the address on the clipboard is
+// usually there to be used.
+func (m model) handleClipboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := keyName(msg)
+
+	switch key {
+	case "esc", "n":
+		m.phase = phaseList
+		m.clipAddress = ""
+		return m, nil
+	case "y":
+		address := m.clipAddress
+		m.clipAddress = ""
+		m.phase = phaseList
+		target, ok := cloneTarget(address, m.cloneDir)
+		if ok && pathExists(target) {
+			m.cloneAddress = address
+			m.removeTarget = target
+			m.phase = phaseRemove
+			return m, nil
+		}
+		return m.startClone(address)
+	}
+	return m, nil
+}
+
+// handleRemoveKey acts on a key press while the question about an existing
+// folder is on screen.
+//
+// The pointer starts on yes, because a fresh clone is what was asked for.
+// Saying no goes back to the address, which is still there.
+func (m model) handleRemoveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := keyName(msg)
+
+	switch key {
+	case "esc", "n":
+		m.phase = phaseClone
+		m.cloneBuf = m.cloneAddress
+		m.clonePos = len([]rune(m.cloneBuf))
+		m.removeTarget = ""
+		return m, nil
+	case "y":
+		target := m.removeTarget
+		m.removeTarget = ""
+		m.phase = phaseList
+		if err := os.RemoveAll(target); err != nil {
+			return m.fail(err)
+		}
+		return m.startClone(m.cloneAddress)
+	}
+	return m, nil
+}
+
 // recallHistory walks the saved messages.
 //
 // The history is newest first, so a step of +1 moves towards the older
@@ -1256,6 +1606,24 @@ func openURLCmd(address string) tea.Cmd {
 	}
 }
 
+// outputRows is how many lines of output fit on the screen.
+func (m model) outputRows() int {
+	rows := m.height - 6
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
+}
+
+// outputLines is the git output, wrapped to the width.
+func (m model) outputLines(width int) []string {
+	var lines []string
+	for _, line := range strings.Split(m.output, "\n") {
+		lines = append(lines, wrapText(line, width)...)
+	}
+	return lines
+}
+
 // selectedPaths are the files that are ticked.
 func (m model) selectedPaths() []string {
 	var paths []string
@@ -1344,6 +1712,14 @@ func (m model) View() string {
 		return m.viewPRConfirm()
 	case phaseError:
 		return m.viewError()
+	case phaseOutput:
+		return m.viewOutput()
+	case phaseClone:
+		return m.viewClone()
+	case phaseClipboard:
+		return m.viewClipboard()
+	case phaseRemove:
+		return m.viewRemove()
 	}
 	return m.viewList()
 }
@@ -1403,6 +1779,127 @@ func (m model) viewPRConfirm() string {
 
 	b.WriteString(styleInfo.Render("y or n, enter to choose, esc to skip"))
 	return b.String()
+}
+
+// viewOutput draws what git said.
+//
+// The output is usually longer than the screen, so it scrolls, and the
+// position is shown at the bottom.
+func (m model) viewOutput() string {
+	var b strings.Builder
+
+	header := m.outputTitle
+	if header == "" {
+		header = "git output"
+	}
+	if m.repoName != "" {
+		header = m.repoName + "  " + header
+	}
+	b.WriteString("? " + fitWidth(header, m.panelWidth()) + "\n\n")
+
+	width := m.panelWidth()
+	lines := m.outputLines(width - 2)
+	rows := m.outputRows()
+
+	start := m.outputScroll
+	if start > len(lines) {
+		start = len(lines)
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := start + rows
+	if end > len(lines) {
+		end = len(lines)
+	}
+	for _, line := range lines[start:end] {
+		b.WriteString(styleBorder.Render("| ") + padToWidth(line, width-2) + "\n")
+	}
+	b.WriteString(styleBorder.Render("+-"+strings.Repeat("-", width-2)) + "\n")
+
+	position := fmt.Sprintf("%d of %d", len(lines), end)
+	b.WriteString(styleInfo.Render("esc closes the output, arrows scroll (" + position + ")"))
+	return b.String()
+}
+
+// viewClone draws the prompt for the address of a repository to clone.
+func (m model) viewClone() string {
+	var b strings.Builder
+
+	message := "Clone:"
+	if m.repoName != "" {
+		message = m.repoName + "  " + message
+	}
+	b.WriteString("? " + message + "\n")
+	b.WriteString(pointer + " " + withCursor(m.cloneBuf, m.clonePos) + "\n")
+
+	// The command that will run is shown, so there is no doubt about
+	// what is about to happen.
+	width := m.panelWidth()
+	rule := "+-- "
+	title := "will run"
+	tail := width - displayWidth(rule) - displayWidth(title) - 1
+	if tail < 0 {
+		tail = 0
+	}
+	b.WriteString(styleBorder.Render(rule) + styleTitle.Render(title) + styleBorder.Render(" "+strings.Repeat("-", tail)) + "\n")
+
+	command := "git clone " + strings.TrimSpace(m.cloneBuf)
+	if strings.TrimSpace(m.cloneBuf) == "" {
+		command = "git clone <address>"
+	}
+	b.WriteString(styleBorder.Render("| ") + styleCmd.Render(padToWidth(fitWidth(command, width-2), width-2)) + "\n")
+
+	b.WriteString(styleInfo.Render("enter to clone, esc to cancel"))
+	return b.String()
+}
+
+// viewClipboard asks whether the repository on the clipboard should be
+// cloned.
+func (m model) viewClipboard() string {
+	var b strings.Builder
+
+	question := "Clone " + repoFolder(m.clipAddress) + "?"
+	if m.repoName != "" {
+		question = m.repoName + "  " + question
+	}
+	b.WriteString("? " + question + "\n")
+	b.WriteString(pointer + " yes\n")
+	b.WriteString("  no\n")
+
+	width := m.panelWidth()
+	b.WriteString(fitWidth("git clone "+m.clipAddress, width) + "\n")
+
+	b.WriteString(styleInfo.Render("y or n, enter to choose, esc to skip"))
+	return b.String()
+}
+
+// viewRemove asks whether a folder that is in the way should be removed.
+func (m model) viewRemove() string {
+	var b strings.Builder
+
+	question := "Remove " + m.removeTarget + " and clone again?"
+	if m.repoName != "" {
+		question = m.repoName + "  " + question
+	}
+	b.WriteString("? " + question + "\n")
+	b.WriteString(pointer + " yes\n")
+	b.WriteString("  no\n")
+
+	width := m.panelWidth()
+	b.WriteString(fitWidth("the folder is removed and the clone is made again", width) + "\n")
+
+	b.WriteString(styleInfo.Render("y or n, enter to choose, esc to skip"))
+	return b.String()
+}
+
+// panelWidth is the width the panels are drawn at.
+func (m model) panelWidth() int {
+	width := m.width
+	if width < minPanelWidth {
+		width = minPanelWidth
+	}
+	return width
 }
 
 // upstreamFor is the remote branch a local branch tracks, or "" when it has
@@ -1528,6 +2025,10 @@ func (m model) viewList() string {
 
 	// The message line carries the repository folder name.
 	message := "Switch to branch:"
+	if m.root == "" {
+		// There is no repository, so there is no branch to switch to.
+		message = "No repository here:"
+	}
 	if m.repoName != "" {
 		message = m.repoName + "  " + message
 	}
@@ -1563,6 +2064,12 @@ func (m model) viewList() string {
 	for i := 0; i < rows; i++ {
 		index := m.offset + i
 		if index >= len(m.matches) {
+			// With no repository there is nothing to list, so the way
+			// to get one is said instead.
+			if i == 0 && m.root == "" {
+				b.WriteString("  " + styleInfo.Render("ctrl+g clones a repository into this folder") + "\n")
+				continue
+			}
 			b.WriteString("\n")
 			continue
 		}

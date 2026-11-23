@@ -1,43 +1,92 @@
-## git-picker v1.6
+## git-picker v1.7
 
-After a push to GitHub, the picker offers to open the pull request page.
+Clone a repository, and see what git said while it did it.
 
-### The pull request page
+### Ctrl+G clones
 
-A push to GitHub ends with git printing the address of a pull request. The
-picker picks that up and asks whether to open it:
+Ctrl+G asks for the address of a repository and clones it into the current
+directory, as a folder named after the repository:
 
 ```
-? repo  Open the pull request page?
+? folder  Clone:
+
+> https://github.com/owner/repo.git
++-- will run --------------------------------
+| git clone https://github.com/owner/repo.git
+-------------------------------------------
+
+enter to clone, esc to cancel
+```
+
+If a folder of that name is already there, the picker asks before removing
+it, because that is the only way to get a fresh copy:
+
+```
+? folder  Remove C:\work\repo and clone again?
+
+> yes
+  no
+```
+
+After the clone the picker moves into the new repository, so the branches in
+it are the ones on offer.
+
+### The clipboard is looked at
+
+Started outside a repository, the picker reads the clipboard. If it holds the
+address of a repository, the picker offers to clone it:
+
+```
+? folder  Clone repo?
 
 > yes
   no
 
-https://github.com/owner/repo/compare/develop...feature/x?quick_pull=1
-y or n, enter to choose, esc to skip
+git clone https://github.com/owner/repo.git
 ```
 
-Answer yes and the page opens in your default browser. Answer no, or press
-escape, and the picker carries on.
+An address is recognised in the forms git itself uses,
+`git@github.com:owner/repo.git` and `https://github.com/owner/repo`, and the
+host has to be one that is known to hold repositories. Ordinary text is left
+alone.
 
-It happens after any push, whether it came from the commit flow or from
-Ctrl+P. A push that was not to GitHub has no page to offer, so nothing is
-asked.
+Inside a repository the clipboard is not read at all, because there is nothing
+to clone.
 
-### The pull request goes back where the work came from
+### The picker starts outside a repository
 
-The page is opened with the base branch already chosen, so the pull request
-goes back to the branch the work was branched from, rather than to the
-default branch of the repository.
+It used to refuse, and exit with "not inside a git repository". Now it opens
+in an empty state, so there is somewhere to clone from. Leaving without a
+repository still exits with 1, because there was nothing to work on.
 
-Git records that in the reflog of the branch, as `branch: Created from
-main`, and a branch made with no starting point is recorded as `Created from
-HEAD`, which the HEAD reflog then explains. A branch that is not on the
-remote is left out, because GitHub can only make a pull request against a
-branch that is in the repository, and GitHub picks its default in that case.
+### Every operation shows what git said
 
-When the branch already has a pull request, that pull request is opened as
-it is, because its base branch was already chosen when it was made.
+After a git command finishes, what it said is on screen:
+
+```
+? repo  git pull
+
++-- git pull ------------------------------
+| stdout:
+| From github.com:owner/repo
+|  * [new branch]  feature/x -> feature/x
+| stderr:
+| ...
++---------------------------------------
+
+esc closes the output, arrows scroll (12 of 12)
+```
+
+The output scrolls with the arrows and the page keys, and escape closes it.
+
+A switch and the pull that follows it are one panel, because they are one
+thing that was asked for. The background fetch has no panel, because it
+happens before you have done anything, and the file list has no panel either,
+because that output is already on screen as a list.
+
+The question about pushing a commit comes after the commit output has been
+read, and the question about the pull request page comes after the push
+output.
 
 ### Keys
 
@@ -50,9 +99,10 @@ it is, because its base branch was already chosen when it was made.
 | ctrl+n | switch to the highlighted branch and make a new one from it |
 | ctrl+c | commit: pick the files, then write the message |
 | ctrl+p | push the current branch |
+| ctrl+g | clone a repository into the current directory |
 | enter | switch to the highlighted branch and pull |
 | y / n | answer the push question, and the pull request question |
-| esc | leave |
+| esc | leave, or close the git output |
 
 Escape is the way out. Escape always leaves, even while git is working.
 

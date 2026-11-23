@@ -2,7 +2,7 @@ package main
 
 // git-picker: an interactive git branch picker that switches and pulls.
 //
-// Version: v1.6
+// Version: v1.7
 //
 // Finds the repository root, lists local and remote branches in a
 // fuzzy-selectable menu, switches to the chosen branch and pulls.
@@ -25,11 +25,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const version = "v1.6"
+const version = "v1.7"
 
 func main() {
 	os.Exit(mainExitCode(os.Args[1:], os.Stdout, os.Stderr))
@@ -95,7 +96,11 @@ func reportError(err error, stderr io.Writer) int {
 func run(dump bool, now int64, query string, stdout io.Writer) error {
 	root, ok := findRepoRoot(workingDir())
 	if !ok {
-		return fmt.Errorf("not inside a git repository")
+		// There is no repository, but there may be one on the clipboard
+		// to clone, so the picker starts anyway and waits to hear about
+		// it. Leaving without a repository is a failure, because there
+		// was nothing to work on.
+		return runWithoutRepo()
 	}
 
 	if dump {
@@ -107,7 +112,7 @@ func run(dump bool, now int64, query string, stdout io.Writer) error {
 	// picker opens.
 	fetchCh := make(chan fetchResult, 1)
 	go func() {
-		err := fetch(root)
+		_, err := fetch(root)
 		var branches []Branch
 		if err == nil {
 			branches, _ = listBranches(root)
@@ -126,6 +131,43 @@ func run(dump bool, now int64, query string, stdout io.Writer) error {
 	current := currentBranch(root)
 	picker := newModel(root, repoLabel(root), current, branches, fetchCh, loadHistory())
 
+	return showPicker(picker)
+}
+
+// runWithoutRepo runs the picker where there is no repository.
+//
+// The picker starts empty, with a clone offered if the clipboard holds the
+// address of one. If there is nothing to clone, leaving is a failure, so
+// the picker says what is wrong and exits with the code for it.
+func runWithoutRepo() error {
+	dir, err := os.Getwd()
+	if err != nil {
+		dir = "."
+	}
+	name := filepath.Base(dir)
+
+	picker := newModel("", name, "", nil, nil, loadHistory())
+	picker.cloneDir = dir
+	picker.status = "not inside a git repository"
+	picker.statusErr = true
+
+	if err := showPicker(picker); err != nil {
+		return err
+	}
+	return noRepositoryError()
+}
+
+// noRepositoryError is what the picker reports when it is left with no
+// repository to work on.
+//
+// It is a failure rather than a quiet exit, because there was nothing the
+// picker could do.
+func noRepositoryError() error {
+	return fmt.Errorf("not inside a git repository")
+}
+
+// showPicker runs the picker and reports how it ended.
+func showPicker(picker model) error {
 	program := tea.NewProgram(picker, tea.WithAltScreen())
 	final, err := program.Run()
 	if err != nil {

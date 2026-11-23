@@ -92,7 +92,7 @@ func TestAFailedFetchCarriesTheGitExitCode(t *testing.T) {
 	repo, _ := makeTestRepoWithRemote(t)
 	runGitIn(t, repo, "remote", "set-url", "origin", "C:/nonexistent/nowhere")
 
-	err := fetch(repo)
+	_, err := fetch(repo)
 	got := gitErr(t, err)
 
 	if got.Code == 0 {

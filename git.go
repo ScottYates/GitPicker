@@ -83,6 +83,15 @@ func checkGit(stdout, stderr string, code int, action string) (string, error) {
 // A stream that said nothing is left out, so the detail reads as git wrote
 // it rather than as two empty sections.
 func gitDetail(stdout, stderr string) string {
+	return gitOutput(stdout, stderr)
+}
+
+// gitOutput is everything a git command said, labelled by the stream it
+// came from.
+//
+// A stream that said nothing is left out, so the output reads as git wrote
+// it rather than as two empty sections.
+func gitOutput(stdout, stderr string) string {
 	var parts []string
 	if out := strings.TrimSpace(stdout); out != "" {
 		parts = append(parts, "stdout:\n"+out)
@@ -303,32 +312,34 @@ func headFromGitDir(root string) string {
 }
 
 // fetch updates the remote refs and prunes the ones that are gone.
-func fetch(cwd string) error {
+//
+// The output comes back as well, so that a failure can be reported in full.
+func fetch(cwd string) (string, error) {
 	stdout, stderr, code := runGit([]string{"fetch", "--all", "--prune"}, cwd)
 	_, err := checkGit(stdout, stderr, code, "fetch")
-	return err
+	return gitOutput(stdout, stderr), err
 }
 
 // switchBranch checks out a local branch, or tracks a remote-only one.
-func switchBranch(branch Branch, cwd string) error {
+func switchBranch(branch Branch, cwd string) (string, error) {
 	args := switchArgs(branch)
 	stdout, stderr, code := runGit(args, cwd)
 	_, err := checkGit(stdout, stderr, code, strings.Join(args, " "))
-	return err
+	return gitOutput(stdout, stderr), err
 }
 
 // pull updates the current branch from its upstream.
-func pull(cwd string) error {
+func pull(cwd string) (string, error) {
 	stdout, stderr, code := runGit([]string{"pull"}, cwd)
 	_, err := checkGit(stdout, stderr, code, "pull")
-	return err
+	return gitOutput(stdout, stderr), err
 }
 
 // createBranch makes a new branch at the current HEAD and switches to it.
-func createBranch(name string, cwd string) error {
+func createBranch(name string, cwd string) (string, error) {
 	stdout, stderr, code := runGit([]string{"switch", "-c", name}, cwd)
 	_, err := checkGit(stdout, stderr, code, "switch -c "+name)
-	return err
+	return gitOutput(stdout, stderr), err
 }
 
 // FileStatus is one entry from git status.
@@ -345,10 +356,13 @@ type FileStatus struct {
 // This is the short format, one entry per line: two characters of status, a
 // space, then the path. A rename shows as "old -> new" and the new path is
 // the one that gets committed.
-func statusFiles(cwd string) ([]FileStatus, error) {
+//
+// The output comes back as well, though the file list is already that
+// output shown as a list.
+func statusFiles(cwd string) ([]FileStatus, string, error) {
 	stdout, stderr, code := runGit([]string{"status", "--porcelain"}, cwd)
 	if _, err := checkGit(stdout, stderr, code, "status"); err != nil {
-		return nil, err
+		return nil, gitOutput(stdout, stderr), err
 	}
 
 	var files []FileStatus
@@ -362,7 +376,7 @@ func statusFiles(cwd string) ([]FileStatus, error) {
 		}
 		files = append(files, FileStatus{Code: line[:2], Path: path})
 	}
-	return files, nil
+	return files, gitOutput(stdout, stderr), nil
 }
 
 // commitFiles commits the given paths with the message.
@@ -370,24 +384,24 @@ func statusFiles(cwd string) ([]FileStatus, error) {
 // The files are added first, because a path-limited commit cannot pick up a
 // file git has never seen. The commit is then limited to those same paths,
 // so anything else that happened to be staged is left alone.
-func commitFiles(cwd, message string, paths []string) error {
+func commitFiles(cwd, message string, paths []string) (string, error) {
 	if len(paths) == 0 {
-		return fmt.Errorf("no files were selected")
+		return "", fmt.Errorf("no files were selected")
 	}
 	if strings.TrimSpace(message) == "" {
-		return fmt.Errorf("a commit message is needed")
+		return "", fmt.Errorf("a commit message is needed")
 	}
 
 	add := append([]string{"add", "--"}, paths...)
 	stdout, stderr, code := runGit(add, cwd)
 	if _, err := checkGit(stdout, stderr, code, "add"); err != nil {
-		return err
+		return gitOutput(stdout, stderr), err
 	}
 
 	commit := append([]string{"commit", "-m", message, "--"}, paths...)
 	stdout, stderr, code = runGit(commit, cwd)
 	_, err := checkGit(stdout, stderr, code, "commit")
-	return err
+	return gitOutput(stdout, stderr), err
 }
 
 // push pushes the current branch to its upstream.
@@ -398,8 +412,15 @@ func commitFiles(cwd, message string, paths []string) error {
 func push(cwd string) (string, error) {
 	stdout, stderr, code := runGit([]string{"push"}, cwd)
 	_, err := checkGit(stdout, stderr, code, "push")
-	if err != nil {
-		return "", err
-	}
-	return stdout + "\n" + stderr, nil
+	return gitOutput(stdout, stderr), err
+}
+
+// cloneRepo clones a repository into a directory.
+//
+// The output comes back as well, because a clone says a good deal about
+// what it is doing.
+func cloneRepo(address, cwd string) (string, error) {
+	stdout, stderr, code := runGit([]string{"clone", address}, cwd)
+	_, err := checkGit(stdout, stderr, code, "clone "+address)
+	return gitOutput(stdout, stderr), err
 }

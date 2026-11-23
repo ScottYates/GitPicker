@@ -296,6 +296,18 @@ func TestASuccessfulCommitAsksAboutThePush(t *testing.T) {
 	next, _ := m.Update(commitDoneMsg{message: "a message", files: 1})
 	m = next.(model)
 
+	// What git said about the commit comes first.
+	if m.phase != phaseOutput {
+		t.Fatalf("the output should be on screen, got phase %d", m.phase)
+	}
+	if m.afterOutput != afterPushConfirm {
+		t.Fatalf("the push should be offered after the output, got %q", m.afterOutput)
+	}
+
+	// Closing the output leads to the question.
+	next, _ = m.handleKey(keyMsg("esc"))
+	m = next.(model)
+
 	if m.phase != phasePushConfirm {
 		t.Fatalf("the push should be offered, got phase %d", m.phase)
 	}
@@ -385,7 +397,7 @@ func TestStatusFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files, err := statusFiles(repo)
+	files, _, err := statusFiles(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +429,7 @@ func TestCommitFilesCommitsOnlyWhatWasChosen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := commitFiles(repo, "a commit message", []string{"chosen.txt"}); err != nil {
+	if _, err := commitFiles(repo, "a commit message", []string{"chosen.txt"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -436,7 +448,7 @@ func TestCommitFilesCommitsOnlyWhatWasChosen(t *testing.T) {
 	}
 
 	// And the other file is still waiting to be committed.
-	remaining, err := statusFiles(repo)
+	remaining, _, err := statusFiles(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,10 +459,10 @@ func TestCommitFilesCommitsOnlyWhatWasChosen(t *testing.T) {
 
 func TestCommitFilesRefusesAnEmptyMessage(t *testing.T) {
 	repo := makeTestRepo(t)
-	if err := commitFiles(repo, "  ", []string{"a.txt"}); err == nil {
+	if _, err := commitFiles(repo, "  ", []string{"a.txt"}); err == nil {
 		t.Fatal("an empty message should be refused")
 	}
-	if err := commitFiles(repo, "a message", nil); err == nil {
+	if _, err := commitFiles(repo, "a message", nil); err == nil {
 		t.Fatal("no files should be refused")
 	}
 }
