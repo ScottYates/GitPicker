@@ -10,3 +10,7 @@
 
 # A PowerShell script is a Windows script.
 *.ps1 text eol=crlf
+
+# A batch file is a Windows script too, and a batch file with only line
+# feeds in it does not always run.
+*.cmd text eol=crlf
