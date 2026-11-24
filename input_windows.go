@@ -83,6 +83,11 @@ func openConsole() (windows.Handle, error) {
 // modifier keys away and with them the difference between enter and
 // ctrl+enter.
 //
+// The quick edit mode is wanted as well, because it is what lets the mouse
+// select the text in the window, so that what the picker shows can be
+// copied. The console wants the extended flags with it, and the quick edit
+// mode on its own is ignored without them.
+//
 // The mode that was there before is remembered, so it can be put back when
 // the picker is done.
 func prepareConsole(handle windows.Handle) (uint32, error) {
@@ -90,7 +95,11 @@ func prepareConsole(handle windows.Handle) (uint32, error) {
 	if err := windows.GetConsoleMode(handle, &original); err != nil {
 		return 0, err
 	}
-	mode := coninput.AddInputModes(0, windows.ENABLE_WINDOW_INPUT, windows.ENABLE_EXTENDED_FLAGS)
+	mode := coninput.AddInputModes(0,
+		windows.ENABLE_WINDOW_INPUT,
+		windows.ENABLE_EXTENDED_FLAGS,
+		windows.ENABLE_QUICK_EDIT_MODE,
+	)
 	if err := windows.SetConsoleMode(handle, mode); err != nil {
 		return 0, err
 	}

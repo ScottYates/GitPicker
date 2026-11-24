@@ -230,19 +230,19 @@ func TestPanelShowsTheCommands(t *testing.T) {
 	}
 
 	title := visible(lines[0])
-	if !strings.HasPrefix(title, "+-- will run ") {
+	if !strings.HasPrefix(title, cornerTop+horizontal+" will run ") {
 		t.Fatalf("panel title: got %q", title)
 	}
-	if len(title) != 80 {
-		t.Fatalf("the panel should fill the width: got %d cells", len(title))
+	if displayWidth(title) != 80 {
+		t.Fatalf("the panel should fill the width: got %d cells", displayWidth(title))
 	}
 
 	body := visible(lines[1])
-	if !strings.HasPrefix(body, "| git switch master") {
+	if !strings.HasPrefix(body, vertical+" git switch master") {
 		t.Fatalf("panel body: got %q", body)
 	}
-	if len(body) != 80 {
-		t.Fatalf("the panel body should fill the width: got %d cells", len(body))
+	if displayWidth(body) != 80 {
+		t.Fatalf("the panel body should fill the width: got %d cells", displayWidth(body))
 	}
 }
 

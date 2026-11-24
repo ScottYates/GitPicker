@@ -399,12 +399,12 @@ func TestThePickerEndsWithGitsExitCodeWhenAPullFails(t *testing.T) {
 		return strings.Contains(output.String(), "git pull failed")
 	})
 	waitFor(t, "the error panel", func() bool {
-		return strings.Contains(output.String(), "press any key to exit")
+		return strings.Contains(output.String(), "esc to exit")
 	})
 
-	// A key leaves, and the picker ends by itself rather than sitting
+	// Escape leaves, and the picker ends by itself rather than sitting
 	// there with an error on screen.
-	if _, err := input.Write([]byte("x")); err != nil {
+	if _, err := input.Write([]byte("\x1b")); err != nil {
 		t.Fatal(err)
 	}
 

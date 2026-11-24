@@ -2,7 +2,7 @@ package main
 
 // git-picker: an interactive git branch picker that switches and pulls.
 //
-// Version: v1.8
+// Version: v1.9
 //
 // Finds the repository root, lists local and remote branches in a
 // fuzzy-selectable menu, switches to the chosen branch and pulls.
@@ -12,16 +12,19 @@ package main
 //
 // The picker fills the whole screen, reflows when the window is resized,
 // pages with PageUp/PageDown, shows its position in the list, shows the
-// repository folder name at the top, and displays an ASCII panel with the
-// exact commands it will run. Ctrl+N asks for a name and makes a new branch
-// from the highlighted one.
+// repository folder name at the top, and displays a panel with the exact
+// commands it will run. Ctrl+N asks for a name and makes a new branch from
+// the highlighted one.
 //
 // Ctrl+C commits. The message can be more than one line, and ctrl+enter is
 // what finishes it, because enter is what adds a line.
 //
 // The keyboard is read straight from the console on Windows, because
-// bubbletea cannot tell ctrl+enter from enter there. A spinner in the
-// status line shows that git is working.
+// bubbletea cannot tell ctrl+enter from enter there. The console is put on
+// UTF-8 while the picker runs, so the line drawing characters are drawn
+// properly, and the mouse is left free to select the text on screen.
+//
+// A spinner in the status line shows that git is working.
 //
 // Switching does not close the picker: the branch is switched, the list is
 // rebuilt and the picker carries on, so branches can be worked through one
@@ -37,7 +40,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const version = "v1.8"
+const version = "v1.9"
 
 func main() {
 	os.Exit(mainExitCode(os.Args[1:], os.Stdout, os.Stderr))
@@ -175,6 +178,13 @@ func noRepositoryError() error {
 
 // showPicker runs the picker and reports how it ended.
 func showPicker(picker model) error {
+	// The console reads what the picker writes with the code page it is
+	// on, and a DOS code page reads the line drawing characters as
+	// rubbish. The console is put on UTF-8 for as long as the picker
+	// runs, and put back afterwards.
+	restoreCodePage := setOutputCodePage()
+	defer restoreCodePage()
+
 	keyboard := openKeyboard()
 	options := append([]tea.ProgramOption{tea.WithAltScreen()}, keyboard.options...)
 	program := tea.NewProgram(picker, options...)

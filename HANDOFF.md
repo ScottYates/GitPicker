@@ -33,6 +33,8 @@ Go side is free to draw whatever it likes.
 | `input.go` | the seam between the picker and the keyboard |
 | `input_windows.go` | the console reader, and the key map it uses |
 | `input_other.go` | the same, for the builds that let bubbletea read |
+| `codepage_windows.go` | the code page the console reads the output with |
+| `codepage_other.go` | the same, for the builds that need no code page |
 | `history.go` | the saved commit messages |
 | `clone.go`, `pullrequest.go`, `browser.go` | the other jobs the picker does |
 | `clipboard_windows.go`, `clipboard_other.go` | the clipboard, per platform |
@@ -132,6 +134,18 @@ console. Two readers on one console would each steal the other's keys.
 and with them the difference between enter and ctrl+enter. The mode is set
 in `prepareConsole` and the mode that was there before is put back when the
 picker is done.
+
+**The quick edit mode is on, and that has a price.** It is what lets the
+mouse select the text in the window, so what the picker shows can be
+copied. The classic console pastes the clipboard when the window is
+clicked, so a stray click types the clipboard into the picker. The error
+panel leaves on escape only, for that reason, and not on any key.
+
+**The console reads the output with its code page.** A console is normally
+on a DOS code page, where 437 is the common one, and the bytes of a
+character outside ASCII are then read as two or three characters of that
+page. The picker puts the console on UTF-8 while it runs and puts it back
+when it is done, so the line drawing characters are drawn as they are.
 
 **The console is the only source of window resizes on Windows.** Bubbletea's
 own resize listener does nothing there, so the reader has to forward the

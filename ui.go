@@ -38,7 +38,19 @@ import (
 
 const (
 	// pointer is the marker in front of the highlighted row.
-	pointer = "\u276f"
+	//
+	// It is the arrow of the console's own character set, so it is drawn
+	// the same way in every console font.
+	pointer = "\u25ba"
+
+	// The characters the panels are drawn with.
+	//
+	// They are the line drawing characters of the console, and every
+	// console font has them.
+	cornerTop    = "\u250c"
+	cornerBottom = "\u2514"
+	horizontal   = "\u2500"
+	vertical     = "\u2502"
 
 	// previewRows is the height of the command panel: a title rule and two
 	// command lines.
@@ -1060,12 +1072,20 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.handleListKey(msg)
 }
 
-// handleErrorKey quits the picker when a key is pressed on the error panel.
+// handleErrorKey acts on a key press on the error panel.
 //
 // The error is already on screen in full, and the same text goes to stderr
 // when the program exits, so there is nothing left to wait for.
+//
+// Only escape and enter leave the panel. The console pastes the clipboard
+// when the mouse is clicked in the window, and a stray click should not
+// close the panel while the error is being read.
 func (m model) handleErrorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	return m, tea.Quit
+	switch keyName(msg) {
+	case "esc", "enter":
+		return m, tea.Quit
+	}
+	return m, nil
 }
 
 // handleListKey acts on a key press in the branch list.
@@ -1886,9 +1906,9 @@ func (m model) viewOutput() string {
 		end = len(lines)
 	}
 	for _, line := range lines[start:end] {
-		b.WriteString(styleBorder.Render("| ") + padToWidth(line, width-2) + "\n")
+		b.WriteString(styleBorder.Render(vertical+" ") + padToWidth(line, width-2) + "\n")
 	}
-	b.WriteString(styleBorder.Render("+-"+strings.Repeat("-", width-2)) + "\n")
+	b.WriteString(panelBottom(width) + "\n")
 
 	position := fmt.Sprintf("%d of %d", len(lines), end)
 	b.WriteString(styleInfo.Render("esc closes the output, arrows scroll (" + position + ")"))
@@ -1909,19 +1929,13 @@ func (m model) viewClone() string {
 	// The command that will run is shown, so there is no doubt about
 	// what is about to happen.
 	width := m.panelWidth()
-	rule := "+-- "
-	title := "will run"
-	tail := width - displayWidth(rule) - displayWidth(title) - 1
-	if tail < 0 {
-		tail = 0
-	}
-	b.WriteString(styleBorder.Render(rule) + styleTitle.Render(title) + styleBorder.Render(" "+strings.Repeat("-", tail)) + "\n")
+	b.WriteString(panelRule(width, "will run") + "\n")
 
 	command := "git clone " + strings.TrimSpace(m.cloneBuf)
 	if strings.TrimSpace(m.cloneBuf) == "" {
 		command = "git clone <address>"
 	}
-	b.WriteString(styleBorder.Render("| ") + styleCmd.Render(padToWidth(fitWidth(command, width-2), width-2)) + "\n")
+	b.WriteString(styleBorder.Render(vertical+" ") + styleCmd.Render(padToWidth(fitWidth(command, width-2), width-2)) + "\n")
 
 	b.WriteString(styleInfo.Render("enter to clone, esc to cancel"))
 	return b.String()
@@ -2007,20 +2021,14 @@ func (m model) viewError() string {
 		width = minPanelWidth
 	}
 
-	rule := "+-- "
-	title := "error"
-	tail := width - displayWidth(rule) - displayWidth(title) - 1
-	if tail < 0 {
-		tail = 0
-	}
-	b.WriteString(styleBorder.Render(rule) + styleTitle.Render(title) + styleBorder.Render(" "+strings.Repeat("-", tail)) + "\n")
+	b.WriteString(panelRule(width, "error") + "\n")
 
 	for _, line := range m.errorLines(width - 2) {
-		b.WriteString(styleBorder.Render("| ") + padToWidth(line, width-2) + "\n")
+		b.WriteString(styleBorder.Render(vertical+" ") + padToWidth(line, width-2) + "\n")
 	}
-	b.WriteString(styleBorder.Render("+-"+strings.Repeat("-", width-2)) + "\n")
+	b.WriteString(panelBottom(width) + "\n")
 
-	b.WriteString(styleInfo.Render("press any key to exit"))
+	b.WriteString(styleInfo.Render("esc to exit"))
 	return b.String()
 }
 
@@ -2298,22 +2306,30 @@ func (m model) panelLines() []string {
 	if width < minPanelWidth {
 		width = minPanelWidth
 	}
-	title := "will run"
-	head := "+-- "
-	tail := width - displayWidth(head) - displayWidth(title) - 1
-	if tail < 0 {
-		tail = 0
-	}
-	lines := []string{
-		styleBorder.Render(head) + styleTitle.Render(title) + styleBorder.Render(" "+strings.Repeat("-", tail)),
-	}
+	lines := []string{panelRule(width, "will run")}
 
 	commands := m.previewCommands()
 	for _, command := range commands {
 		text := fitWidth(command.text, width-2)
-		lines = append(lines, styleBorder.Render("| ")+command.style.Render(padToWidth(text, width-2)))
+		lines = append(lines, styleBorder.Render(vertical+" ")+command.style.Render(padToWidth(text, width-2)))
 	}
 	return lines
+}
+
+// panelRule draws the top rule of a panel, with the title in it.
+func panelRule(width int, title string) string {
+	head := cornerTop + horizontal + " "
+	tail := width - displayWidth(head) - displayWidth(title) - 1
+	if tail < 0 {
+		tail = 0
+	}
+	return styleBorder.Render(head) + styleTitle.Render(title) +
+		styleBorder.Render(" "+strings.Repeat(horizontal, tail))
+}
+
+// panelBottom draws the rule under a panel.
+func panelBottom(width int) string {
+	return styleBorder.Render(cornerBottom + strings.Repeat(horizontal, width-1))
 }
 
 // previewCommand is one line of the command panel.
@@ -2357,20 +2373,14 @@ func (m model) viewName() string {
 	if width < minPanelWidth {
 		width = minPanelWidth
 	}
-	title := "will run"
-	head := "+-- "
-	tail := width - displayWidth(head) - displayWidth(title) - 1
-	if tail < 0 {
-		tail = 0
-	}
-	b.WriteString(styleBorder.Render(head) + styleTitle.Render(title) + styleBorder.Render(" "+strings.Repeat("-", tail)) + "\n")
+	b.WriteString(panelRule(width, "will run") + "\n")
 
 	name := strings.TrimSpace(m.nameBuf)
 	if name == "" {
 		name = "<name>"
 	}
-	b.WriteString(styleBorder.Render("| ") + styleCmd.Render(padToWidth("git switch "+base, width-2)) + "\n")
-	b.WriteString(styleBorder.Render("| ") + styleCmd.Render(padToWidth("git switch -c "+name, width-2)) + "\n")
+	b.WriteString(styleBorder.Render(vertical+" ") + styleCmd.Render(padToWidth("git switch "+base, width-2)) + "\n")
+	b.WriteString(styleBorder.Render(vertical+" ") + styleCmd.Render(padToWidth("git switch -c "+name, width-2)) + "\n")
 
 	if m.nameErr != "" {
 		b.WriteString(styleError.Render(m.nameErr))

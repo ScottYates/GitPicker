@@ -221,7 +221,7 @@ func TestTheErrorPanelShowsTheWholeError(t *testing.T) {
 	if !strings.Contains(panel, "error: Automatic merge failed") {
 		t.Fatalf("the whole error should be on screen:\n%s", panel)
 	}
-	if !strings.Contains(panel, "press any key to exit") {
+	if !strings.Contains(panel, "esc to exit") {
 		t.Fatalf("the panel should say how to leave:\n%s", panel)
 	}
 }
@@ -239,7 +239,9 @@ func TestTheErrorPanelWrapsALongLine(t *testing.T) {
 	panel := visible(m.viewError())
 
 	for _, line := range strings.Split(panel, "\n") {
-		if len(line) > 40 {
+		// The panel is measured in cells and not in bytes, because the
+		// line drawing characters take more than one byte each.
+		if displayWidth(line) > 40 {
 			t.Fatalf("the panel is wider than the screen: %q", line)
 		}
 	}
@@ -272,7 +274,26 @@ func TestTheErrorPanelSaysHowMuchWasLeftOut(t *testing.T) {
 	}
 }
 
-func TestAKeyOnTheErrorPanelQuitsThePicker(t *testing.T) {
+func TestEscapeOnTheErrorPanelQuitsThePicker(t *testing.T) {
+	m := testModel("master")
+	m.phase = phaseError
+	m.fatal = &GitError{Code: 1, Message: "git pull failed"}
+
+	next, cmd := m.handleKey(keyMsg("esc"))
+	m = next.(model)
+
+	if cmd == nil {
+		t.Fatal("escape should quit the picker")
+	}
+	if m.fatal == nil {
+		t.Fatal("the failure should survive the quit, so it can be reported")
+	}
+}
+
+func TestAStrayKeyDoesNotQuitTheErrorPanel(t *testing.T) {
+	// The console pastes the clipboard when the mouse is clicked in the
+	// window, so a key that arrives on its own should not close the panel
+	// while the error is being read.
 	m := testModel("master")
 	m.phase = phaseError
 	m.fatal = &GitError{Code: 1, Message: "git pull failed"}
@@ -280,11 +301,11 @@ func TestAKeyOnTheErrorPanelQuitsThePicker(t *testing.T) {
 	next, cmd := m.handleKey(keyMsg("x"))
 	m = next.(model)
 
-	if cmd == nil {
-		t.Fatal("a key should quit the picker")
+	if cmd != nil {
+		t.Fatal("a stray key should not quit the picker")
 	}
-	if m.fatal == nil {
-		t.Fatal("the failure should survive the quit, so it can be reported")
+	if m.phase != phaseError {
+		t.Fatalf("the panel should still be up, got phase %d", m.phase)
 	}
 }
 

@@ -161,6 +161,19 @@ func TestTheConsoleReaderReadsAKeyThatIsPushedIn(t *testing.T) {
 	// The program needs a moment to start reading.
 	time.Sleep(200 * time.Millisecond)
 
+	// The mouse has to be able to select the text in the window, which is
+	// what the quick edit mode is for.
+	var mode uint32
+	if err := windows.GetConsoleMode(handle, &mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode&windows.ENABLE_QUICK_EDIT_MODE == 0 {
+		t.Fatal("the quick edit mode should be on, so the mouse can select the text")
+	}
+	if mode&windows.ENABLE_VIRTUAL_TERMINAL_INPUT != 0 {
+		t.Fatal("the virtual terminal input should be off, or the ctrl bit is lost")
+	}
+
 	// Ctrl+Enter, pushed into the console as the keyboard would.
 	pushKey(t, handle, coninput.VK_RETURN, '\n', coninput.LEFT_CTRL_PRESSED)
 

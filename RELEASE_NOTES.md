@@ -1,56 +1,43 @@
-## git-picker v1.8
+## git-picker v1.9
 
-A commit message of more than one line, and a spinner while git works.
+The mouse can select the text on screen, and the characters the picker draws
+are drawn properly.
 
-### The commit message can be more than one line
+### The mouse can select the text
 
-Enter adds a line to the message now, and ctrl+enter is what finishes it:
+The picker used to turn the console's quick edit mode off, which is what a
+program that reads the keyboard has to do, and the mouse could not select
+anything in the window afterwards. Now the quick edit mode is on, so the
+text the picker shows, such as what git said or the error it hit, can be
+selected with the mouse and copied.
 
-```
-? repo  Commit message:
-> fix the thing that was broken
-> and the other thing as well
-ctrl+enter to commit, enter for a new line, esc to go back
-```
+The price is the one the classic console charges for it: a click in the
+window pastes the clipboard into the picker, so a click that was meant to
+be a click types whatever is on the clipboard. A drag to select does not
+do that, and the error panel now waits for escape instead of leaving on any
+key, so a stray click cannot close it while the error is being read.
 
-The up and down keys move the caret between the lines, so a message of more
-than one line can be worked through, and backspace at the start of a line
-joins it to the line above.
+### The characters are drawn properly
 
-The saved messages are walked with ctrl+p and ctrl+n, because the up and down
-keys belong to the caret now:
+The console reads what a program writes with the code page it is on, and
+that is usually one of the DOS code pages, where 437 is the common one. The
+bytes of a character outside ASCII were then read as two or three
+characters of that page, so the pointer in front of the selected branch
+came out as three pieces of rubbish.
 
-| Key | What it does |
-| --- | --- |
-| ctrl+p | the older saved message |
-| ctrl+n | the newer saved message, and then an empty message |
+The picker now puts the console on UTF-8 while it runs, and puts it back
+when it is done, so the console reads the characters as they are.
 
-The message is handed to git as it is, so both lines are in the commit.
-
-### A spinner while git works
-
-The status line carries a spinner while a git command is running, so a slow
-pull does not look like a hang:
+### The panels are drawn with line drawing characters
 
 ```
-? repo  Switch to branch:
->   [1/4]  sort: time  | switching to master...
+┌─ will run ──────────────────────────────────────────────────────────────────
+│ git switch master                                                           
+│ git pull                                                                     
 ```
 
-The spinner goes round while the work lasts and stops by itself when the work
-is done.
-
-### The keyboard is read from the console
-
-On Windows the picker now reads the console records itself instead of letting
-bubbletea do it. Bubbletea maps the return key to enter whatever else is held
-down, so it cannot tell ctrl+enter from enter, and the ctrl bit is thrown
-away before the picker ever sees the key. The console record still carries
-it, so the picker reads the records and hands the keys over itself.
-
-Everything else about the keys is unchanged. The keys behave exactly as they
-did, the window still reflows when it is resized, and a console that cannot
-be opened falls back to the reader that was there before.
+The pointer is the arrow of the console's own character set, so it is the
+same in every console font.
 
 ### Keys
 
