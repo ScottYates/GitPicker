@@ -35,4 +35,16 @@ func TestRenderSnapshot(t *testing.T) {
 	m.history = []string{"fix the thing that was broken", "an older message"}
 	m.historyIndex = 0
 	t.Log("\n" + m.View())
+
+	// A message of more than one line, with the caret on the second line.
+	m.messageBuf = "fix the thing that was broken\nand the other thing as well"
+	m.messagePos = len([]rune(m.messageBuf))
+	m.historyIndex = -1
+	t.Log("\n" + m.View())
+
+	// The spinner, while git is working.
+	m.phase = phaseList
+	m.status = "switching to master..."
+	m.busy = true
+	t.Log("\n" + m.View())
 }

@@ -10,3 +10,7 @@ gitpicker.exe
 # Python bytecode from the reference implementation.
 __pycache__/
 *.py[cod]
+
+# The logs of the tests that are run by hand.
+console_test.log
+smoke.log

@@ -38,4 +38,5 @@ jobs:
           gh release create $env:GITHUB_REF_NAME `
             --title "git-picker $env:GITHUB_REF_NAME" `
             --notes-file RELEASE_NOTES.md `
-            git-picker.exe
+            git-picker.exe `
+            HANDOFF.md

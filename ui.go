@@ -20,7 +20,11 @@ package main
 // can be worked through one after another. Escape leaves.
 //
 // Ctrl+C starts a commit: the changed files are listed for selection, and
-// then the commit message is asked for. Ctrl+P pushes.
+// then the commit message is asked for. The message can be more than one
+// line, and ctrl+enter finishes it. Ctrl+P pushes.
+//
+// The status line carries a spinner while git is working, so a slow command
+// does not look like a hang.
 
 import (
 	"fmt"
@@ -50,8 +54,27 @@ const (
 	instruction = "type to filter, arrows/pgup/pgdn, ctrl+s sort, ctrl+n new branch, ctrl+c commit, ctrl+p push, ctrl+g clone, esc exits"
 
 	filesInstruction   = "arrows to move, space to select, enter to continue, esc to cancel"
-	messageInstruction = "enter to commit, up/down for the last messages, esc to go back"
+	messageInstruction = "ctrl+enter to commit, enter for a new line, up/down for the lines, ctrl+p/n for the last messages, esc to go back"
 )
+
+// messageInstructionFor picks the longest hint that fits the terminal.
+//
+// The message box has more to say than the branch list does, so it has
+// shorter forms for a narrow terminal.
+func messageInstructionFor(width int) string {
+	choices := []string{
+		messageInstruction,
+		"ctrl+enter to commit, enter for a new line, up/down for the lines, ctrl+p/n history, esc to go back",
+		"ctrl+enter to commit, enter for a new line, esc to go back",
+		"ctrl+enter to commit, esc to go back",
+	}
+	for _, choice := range choices {
+		if len(choice) <= width {
+			return choice
+		}
+	}
+	return "esc to go back"
+}
 
 // instructionFor picks the longest hint that fits the terminal.
 //
@@ -182,6 +205,14 @@ type browserDoneMsg struct {
 	err error
 }
 
+// spinnerTickMsg moves the spinner on.
+type spinnerTickMsg struct{}
+
+// spinnerFrames are the frames of the spinner that shows while git works.
+//
+// The frames are plain ASCII, so they look the same everywhere.
+var spinnerFrames = []string{"|", "/", "-", "\\"}
+
 // switchAction is the git work to do when a branch is picked.
 type switchAction struct {
 	branch  Branch
@@ -235,6 +266,9 @@ type model struct {
 	status    string
 	statusErr bool
 	busy      bool
+
+	// spinnerFrame is the frame of the spinner that shows while git works.
+	spinnerFrame int
 
 	// The file selection for a commit.
 	files        []FileStatus
@@ -573,6 +607,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case spinnerTickMsg:
+		// The spinner only goes on while git is working, so it stops by
+		// itself as soon as the work is done.
+		if !m.gitBusy() {
+			return m, nil
+		}
+		m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
+		return m, spinnerTick()
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -715,7 +758,7 @@ func (m *model) startSwitch(branch Branch, newName string) (tea.Model, tea.Cmd) 
 	m.clearOutput()
 	root := m.root
 	action := switchAction{branch: branch, newName: newName}
-	return *m, switchCmd(root, action)
+	return *m, tea.Batch(switchCmd(root, action), spinnerTick())
 }
 
 // startCommit commits the selected files.
@@ -725,7 +768,7 @@ func (m *model) startCommit(message string, paths []string) (tea.Model, tea.Cmd)
 	m.statusErr = false
 	m.clearOutput()
 	root := m.root
-	return *m, commitCmd(root, message, paths)
+	return *m, tea.Batch(commitCmd(root, message, paths), spinnerTick())
 }
 
 // startPush pushes the current branch.
@@ -735,7 +778,7 @@ func (m *model) startPush() (tea.Model, tea.Cmd) {
 	m.statusErr = false
 	m.clearOutput()
 	root := m.root
-	return *m, pushCmd(root)
+	return *m, tea.Batch(pushCmd(root), spinnerTick())
 }
 
 // startClone clones a repository into the current directory.
@@ -745,7 +788,7 @@ func (m *model) startClone(address string) (tea.Model, tea.Cmd) {
 	m.statusErr = false
 	m.clearOutput()
 	dir := m.cloneDir
-	return *m, cloneCmd(address, dir)
+	return *m, tea.Batch(cloneCmd(address, dir), spinnerTick())
 }
 
 // clearOutput empties the output on screen, so that each thing that was
@@ -760,6 +803,16 @@ func (m *model) clearOutput() {
 // gitBusy reports whether a git command is running.
 func (m model) gitBusy() bool {
 	return m.busy || m.pulling
+}
+
+// spinnerTick moves the spinner on and asks for the next tick.
+//
+// The tick goes on for as long as git is working, and stops by itself when
+// the work is done.
+func spinnerTick() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+		return spinnerTickMsg{}
+	})
 }
 
 // switchCmd runs the switch, and the new branch when there is one.
@@ -1253,40 +1306,20 @@ func (m model) handleMessageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.files = nil
 		m.fileSelected = map[string]bool{}
 		return m, nil
+	case "ctrl+j":
+		// Ctrl+Enter finishes the message. A terminal sends it as
+		// ctrl+j, because it is the same byte, and the console reader
+		// maps it onto the same key, so one name covers both.
+		return m.commitMessage()
 	case "enter":
-		message := strings.TrimSpace(m.messageBuf)
-		if message == "" {
-			m.status = "a commit message is needed"
-			m.statusErr = true
-			return m, nil
-		}
-		paths := m.selectedPaths()
-		if len(paths) == 0 {
-			m.phase = phaseFiles
-			m.status = "select at least one file"
-			m.statusErr = true
-			return m, nil
-		}
-		// The message is remembered before the commit runs, so a commit
-		// that fails does not lose it.
-		m.history = rememberMessage(m.history, message)
-		_ = saveHistory(m.history)
-		m.phase = phaseList
-		m.messageBuf = ""
-		m.messagePos = 0
-		m.files = nil
-		m.fileSelected = map[string]bool{}
-		return m.startOrDefer(pendingAction{
-			kind:    actionCommit,
-			message: message,
-			paths:   paths,
-		})
+		// Enter adds a line to the message, so a message of more than
+		// one line can be written.
+		m.messageBuf, m.messagePos = insertText(m.messageBuf, m.messagePos, "\n")
+		m.historyIndex = -1
+		return m, nil
 	case "backspace":
-		if m.messagePos > 0 {
-			runes := []rune(m.messageBuf)
-			m.messageBuf = string(runes[:m.messagePos-1]) + string(runes[m.messagePos:])
-			m.messagePos--
-		}
+		m.messageBuf, m.messagePos = deleteBack(m.messageBuf, m.messagePos)
+		m.historyIndex = -1
 		return m, nil
 	case "left":
 		if m.messagePos > 0 {
@@ -1299,9 +1332,19 @@ func (m model) handleMessageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "up":
-		m.recallHistory(1)
+		// The caret moves a line up, so a message of more than one line
+		// can be worked through.
+		m.messagePos = moveCaretLine(m.messageBuf, m.messagePos, -1)
 		return m, nil
 	case "down":
+		m.messagePos = moveCaretLine(m.messageBuf, m.messagePos, 1)
+		return m, nil
+	case "ctrl+p":
+		// The saved messages are walked with ctrl+p and ctrl+n, because
+		// the up and down keys move the caret.
+		m.recallHistory(1)
+		return m, nil
+	case "ctrl+n":
 		m.recallHistory(-1)
 		return m, nil
 	}
@@ -1315,14 +1358,44 @@ func (m model) handleMessageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			text = stripControl(string(msg.Runes))
 		}
 		if text != "" {
-			runes := []rune(m.messageBuf)
-			m.messageBuf = string(runes[:m.messagePos]) + text + string(runes[m.messagePos:])
-			m.messagePos += len([]rune(text))
+			m.messageBuf, m.messagePos = insertText(m.messageBuf, m.messagePos, text)
 			// Typing means the history is no longer being browsed.
 			m.historyIndex = -1
 		}
 	}
 	return m, nil
+}
+
+// commitMessage commits the selected files with the message that was typed.
+//
+// The message is remembered before the commit runs, so a commit that fails
+// does not lose it.
+func (m model) commitMessage() (tea.Model, tea.Cmd) {
+	message := strings.TrimSpace(m.messageBuf)
+	if message == "" {
+		m.status = "a commit message is needed"
+		m.statusErr = true
+		return m, nil
+	}
+	paths := m.selectedPaths()
+	if len(paths) == 0 {
+		m.phase = phaseFiles
+		m.status = "select at least one file"
+		m.statusErr = true
+		return m, nil
+	}
+	m.history = rememberMessage(m.history, message)
+	_ = saveHistory(m.history)
+	m.phase = phaseList
+	m.messageBuf = ""
+	m.messagePos = 0
+	m.files = nil
+	m.fileSelected = map[string]bool{}
+	return m.startOrDefer(pendingAction{
+		kind:    actionCommit,
+		message: message,
+		paths:   paths,
+	})
 }
 
 // handleOutputKey acts on a key press while the git output is on screen.
@@ -2051,7 +2124,13 @@ func (m model) viewList() string {
 		if m.statusErr {
 			style = styleError
 		}
-		b.WriteString(style.Render("  " + m.status))
+		text := m.status
+		if m.gitBusy() {
+			// The spinner shows that git is still working, so the wait
+			// does not look like a hang.
+			text = spinnerFrames[m.spinnerFrame] + " " + text
+		}
+		b.WriteString(style.Render("  " + text))
 	}
 	b.WriteString("\n")
 
@@ -2144,6 +2223,9 @@ func (m model) fileLabel(file FileStatus) string {
 }
 
 // viewMessage draws the commit message box.
+//
+// The message can be more than one line, so the box holds as many lines as
+// there is room for and scrolls to keep the caret on screen.
 func (m model) viewMessage() string {
 	var b strings.Builder
 
@@ -2152,14 +2234,38 @@ func (m model) viewMessage() string {
 		message = m.repoName + "  " + message
 	}
 	b.WriteString("? " + message + "\n")
-	b.WriteString(pointer + " " + withCursor(m.messageBuf, m.messagePos) + "\n")
 
-	hint := messageInstruction
+	lines := messageLines(m.messageBuf)
+	place := caretPlace(m.messageBuf, m.messagePos)
+	rows := m.messageRows()
+	start := messageScroll(lines, place.line, rows)
+
+	for i := start; i < start+rows && i < len(lines); i++ {
+		text := lines[i]
+		if i == place.line {
+			text = withCursor(text, place.column)
+		}
+		b.WriteString(pointer + " " + text + "\n")
+	}
+
+	hint := messageInstructionFor(m.width)
 	if m.historyIndex >= 0 {
-		hint = fmt.Sprintf("enter to commit, %d of %d saved messages", m.historyIndex+1, len(m.history))
+		hint = fmt.Sprintf("ctrl+enter to commit, %d of %d saved messages", m.historyIndex+1, len(m.history))
 	}
 	b.WriteString(styleInfo.Render(hint))
 	return b.String()
+}
+
+// messageRows is how many lines the message box may show.
+//
+// The box shares the screen with the heading and the hint, so the message
+// gets what is left of it.
+func (m model) messageRows() int {
+	rows := m.height - 2
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
 }
 
 // withCursor renders text with a block cursor over the character at the

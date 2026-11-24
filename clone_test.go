@@ -112,7 +112,7 @@ func TestTheCloneRunsAndThePickerMovesIntoIt(t *testing.T) {
 		t.Fatal("enter should have started the clone")
 	}
 
-	done, ok := cmd().(cloneDoneMsg)
+	done, ok := runCmd(t, cmd).(cloneDoneMsg)
 	if !ok {
 		t.Fatal("the clone should have reported back")
 	}
@@ -206,7 +206,7 @@ func TestAnExistingFolderIsOnlyRemovedAfterTheQuestion(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("yes should have started the clone")
 	}
-	done, ok := cmd().(cloneDoneMsg)
+	done, ok := runCmd(t, cmd).(cloneDoneMsg)
 	if !ok {
 		t.Fatal("the clone should have reported back")
 	}

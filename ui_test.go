@@ -20,8 +20,47 @@ func keyMsg(name string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEsc}
 	case "backspace":
 		return tea.KeyMsg{Type: tea.KeyBackspace}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "ctrl+p":
+		return tea.KeyMsg{Type: tea.KeyCtrlP}
+	case "ctrl+n":
+		return tea.KeyMsg{Type: tea.KeyCtrlN}
+	case "ctrl+enter":
+		// Ctrl+Enter is the same byte as ctrl+j, which is the name
+		// bubbletea gives it.
+		return tea.KeyMsg{Type: tea.KeyCtrlJ}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(name)}
+}
+
+// runCmd runs a command and returns the message it produced.
+//
+// The picker runs the git command and the spinner together, so the command
+// is a batch and the message has to be looked for inside it.
+func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("there was no command to run")
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return msg
+	}
+	for _, c := range batch {
+		if c == nil {
+			continue
+		}
+		result := c()
+		if _, isBatch := result.(tea.BatchMsg); isBatch {
+			continue
+		}
+		return result
+	}
+	return nil
 }
 
 // ansiPattern matches the escape sequences lipgloss adds, so a rendered
@@ -123,6 +162,59 @@ func TestToggleSortReordersTheList(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("alphabetical order: got %v, want %v", got, want)
 		}
+	}
+}
+
+func TestTheSpinnerShowsWhileGitIsWorking(t *testing.T) {
+	m := testModel("master")
+	m.width = 80
+	m.height = 24
+	m.status = "switching to master..."
+	m.busy = true
+
+	view := visible(m.View())
+	if !strings.Contains(view, "| switching to master...") {
+		t.Fatalf("the spinner should be in the status line:\n%s", view)
+	}
+
+	// And it is gone once the work is done.
+	m.busy = false
+	view = visible(m.View())
+	if strings.Contains(view, "| switching to master...") {
+		t.Fatalf("the spinner should be gone when git is done:\n%s", view)
+	}
+}
+
+func TestTheSpinnerGoesOnAndStops(t *testing.T) {
+	m := testModel("master")
+	m.busy = true
+
+	next, cmd := m.Update(spinnerTickMsg{})
+	m = next.(model)
+	if m.spinnerFrame != 1 {
+		t.Fatalf("the spinner should have moved on, got frame %d", m.spinnerFrame)
+	}
+	if cmd == nil {
+		t.Fatal("the spinner should keep going while git works")
+	}
+
+	// The frames go round and round.
+	next, _ = m.Update(spinnerTickMsg{})
+	m = next.(model)
+	next, _ = m.Update(spinnerTickMsg{})
+	m = next.(model)
+	next, _ = m.Update(spinnerTickMsg{})
+	m = next.(model)
+	if m.spinnerFrame != 0 {
+		t.Fatalf("the spinner should have come round, got frame %d", m.spinnerFrame)
+	}
+
+	// And it stops when git is done.
+	m.busy = false
+	next, cmd = m.Update(spinnerTickMsg{})
+	m = next.(model)
+	if cmd != nil {
+		t.Fatal("the spinner should stop when git is done")
 	}
 }
 

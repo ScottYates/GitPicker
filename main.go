@@ -2,7 +2,7 @@ package main
 
 // git-picker: an interactive git branch picker that switches and pulls.
 //
-// Version: v1.7
+// Version: v1.8
 //
 // Finds the repository root, lists local and remote branches in a
 // fuzzy-selectable menu, switches to the chosen branch and pulls.
@@ -15,6 +15,13 @@ package main
 // repository folder name at the top, and displays an ASCII panel with the
 // exact commands it will run. Ctrl+N asks for a name and makes a new branch
 // from the highlighted one.
+//
+// Ctrl+C commits. The message can be more than one line, and ctrl+enter is
+// what finishes it, because enter is what adds a line.
+//
+// The keyboard is read straight from the console on Windows, because
+// bubbletea cannot tell ctrl+enter from enter there. A spinner in the
+// status line shows that git is working.
 //
 // Switching does not close the picker: the branch is switched, the list is
 // rebuilt and the picker carries on, so branches can be worked through one
@@ -30,7 +37,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const version = "v1.7"
+const version = "v1.8"
 
 func main() {
 	os.Exit(mainExitCode(os.Args[1:], os.Stdout, os.Stderr))
@@ -168,7 +175,15 @@ func noRepositoryError() error {
 
 // showPicker runs the picker and reports how it ended.
 func showPicker(picker model) error {
-	program := tea.NewProgram(picker, tea.WithAltScreen())
+	keyboard := openKeyboard()
+	options := append([]tea.ProgramOption{tea.WithAltScreen()}, keyboard.options...)
+	program := tea.NewProgram(picker, options...)
+
+	// The keyboard is stopped when the picker is done with it, so the
+	// console is left the way it was found.
+	stop := keyboard.begin(program)
+	defer stop()
+
 	final, err := program.Run()
 	if err != nil {
 		return err

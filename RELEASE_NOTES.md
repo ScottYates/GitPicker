@@ -1,92 +1,56 @@
-## git-picker v1.7
+## git-picker v1.8
 
-Clone a repository, and see what git said while it did it.
+A commit message of more than one line, and a spinner while git works.
 
-### Ctrl+G clones
+### The commit message can be more than one line
 
-Ctrl+G asks for the address of a repository and clones it into the current
-directory, as a folder named after the repository:
-
-```
-? folder  Clone:
-
-> https://github.com/owner/repo.git
-+-- will run --------------------------------
-| git clone https://github.com/owner/repo.git
--------------------------------------------
-
-enter to clone, esc to cancel
-```
-
-If a folder of that name is already there, the picker asks before removing
-it, because that is the only way to get a fresh copy:
+Enter adds a line to the message now, and ctrl+enter is what finishes it:
 
 ```
-? folder  Remove C:\work\repo and clone again?
-
-> yes
-  no
+? repo  Commit message:
+> fix the thing that was broken
+> and the other thing as well
+ctrl+enter to commit, enter for a new line, esc to go back
 ```
 
-After the clone the picker moves into the new repository, so the branches in
-it are the ones on offer.
+The up and down keys move the caret between the lines, so a message of more
+than one line can be worked through, and backspace at the start of a line
+joins it to the line above.
 
-### The clipboard is looked at
+The saved messages are walked with ctrl+p and ctrl+n, because the up and down
+keys belong to the caret now:
 
-Started outside a repository, the picker reads the clipboard. If it holds the
-address of a repository, the picker offers to clone it:
+| Key | What it does |
+| --- | --- |
+| ctrl+p | the older saved message |
+| ctrl+n | the newer saved message, and then an empty message |
 
-```
-? folder  Clone repo?
+The message is handed to git as it is, so both lines are in the commit.
 
-> yes
-  no
+### A spinner while git works
 
-git clone https://github.com/owner/repo.git
-```
-
-An address is recognised in the forms git itself uses,
-`git@github.com:owner/repo.git` and `https://github.com/owner/repo`, and the
-host has to be one that is known to hold repositories. Ordinary text is left
-alone.
-
-Inside a repository the clipboard is not read at all, because there is nothing
-to clone.
-
-### The picker starts outside a repository
-
-It used to refuse, and exit with "not inside a git repository". Now it opens
-in an empty state, so there is somewhere to clone from. Leaving without a
-repository still exits with 1, because there was nothing to work on.
-
-### Every operation shows what git said
-
-After a git command finishes, what it said is on screen:
+The status line carries a spinner while a git command is running, so a slow
+pull does not look like a hang:
 
 ```
-? repo  git pull
-
-+-- git pull ------------------------------
-| stdout:
-| From github.com:owner/repo
-|  * [new branch]  feature/x -> feature/x
-| stderr:
-| ...
-+---------------------------------------
-
-esc closes the output, arrows scroll (12 of 12)
+? repo  Switch to branch:
+>   [1/4]  sort: time  | switching to master...
 ```
 
-The output scrolls with the arrows and the page keys, and escape closes it.
+The spinner goes round while the work lasts and stops by itself when the work
+is done.
 
-A switch and the pull that follows it are one panel, because they are one
-thing that was asked for. The background fetch has no panel, because it
-happens before you have done anything, and the file list has no panel either,
-because that output is already on screen as a list.
+### The keyboard is read from the console
 
-The question about pushing a commit comes after the commit output has been
-read, and the question about the pull request page comes after the push
-output.
+On Windows the picker now reads the console records itself instead of letting
+bubbletea do it. Bubbletea maps the return key to enter whatever else is held
+down, so it cannot tell ctrl+enter from enter, and the ctrl bit is thrown
+away before the picker ever sees the key. The console record still carries
+it, so the picker reads the records and hands the keys over itself.
+
+Everything else about the keys is unchanged. The keys behave exactly as they
+did, the window still reflows when it is resized, and a console that cannot
+be opened falls back to the reader that was there before.
 
 ### Keys
 
@@ -103,6 +67,16 @@ output.
 | enter | switch to the highlighted branch and pull |
 | y / n | answer the push question, and the pull request question |
 | esc | leave, or close the git output |
+
+In the commit message box:
+
+| Key | What it does |
+| --- | --- |
+| ctrl+enter | finish the message and commit |
+| enter | add a line to the message |
+| up / down | move the caret between the lines |
+| ctrl+p / ctrl+n | walk the saved messages |
+| esc | go back to the file list |
 
 Escape is the way out. Escape always leaves, even while git is working.
 

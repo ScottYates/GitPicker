@@ -185,41 +185,41 @@ func TestHistoryRecallWalksBackAndForth(t *testing.T) {
 	m.history = []string{"newest", "older", "oldest"}
 	m.historyIndex = -1
 
-	next, _ := m.handleKey(keyMsg("up"))
+	next, _ := m.handleKey(keyMsg("ctrl+p"))
 	m = next.(model)
 	if m.messageBuf != "newest" {
-		t.Fatalf("up should recall the newest message, got %q", m.messageBuf)
+		t.Fatalf("ctrl+p should recall the newest message, got %q", m.messageBuf)
 	}
 
-	next, _ = m.handleKey(keyMsg("up"))
+	next, _ = m.handleKey(keyMsg("ctrl+p"))
 	m = next.(model)
 	if m.messageBuf != "older" {
-		t.Fatalf("up should move to the older message, got %q", m.messageBuf)
+		t.Fatalf("ctrl+p should move to the older message, got %q", m.messageBuf)
 	}
 
-	next, _ = m.handleKey(keyMsg("up"))
+	next, _ = m.handleKey(keyMsg("ctrl+p"))
 	m = next.(model)
 	if m.messageBuf != "oldest" {
-		t.Fatalf("up should reach the oldest message, got %q", m.messageBuf)
+		t.Fatalf("ctrl+p should reach the oldest message, got %q", m.messageBuf)
 	}
 
-	next, _ = m.handleKey(keyMsg("down"))
+	next, _ = m.handleKey(keyMsg("ctrl+n"))
 	m = next.(model)
 	if m.messageBuf != "older" {
-		t.Fatalf("down should move back, got %q", m.messageBuf)
+		t.Fatalf("ctrl+n should move back, got %q", m.messageBuf)
 	}
 
-	next, _ = m.handleKey(keyMsg("down"))
+	next, _ = m.handleKey(keyMsg("ctrl+n"))
 	m = next.(model)
 	if m.messageBuf != "newest" {
-		t.Fatalf("down should reach the newest message, got %q", m.messageBuf)
+		t.Fatalf("ctrl+n should reach the newest message, got %q", m.messageBuf)
 	}
 
 	// And all the way down to an empty message.
-	next, _ = m.handleKey(keyMsg("down"))
+	next, _ = m.handleKey(keyMsg("ctrl+n"))
 	m = next.(model)
 	if m.messageBuf != "" {
-		t.Fatalf("down should clear the message, got %q", m.messageBuf)
+		t.Fatalf("ctrl+n should clear the message, got %q", m.messageBuf)
 	}
 }
 
@@ -229,7 +229,7 @@ func TestTypingLeavesTheHistory(t *testing.T) {
 	m.history = []string{"newest"}
 	m.historyIndex = -1
 
-	next, _ := m.handleKey(keyMsg("up"))
+	next, _ := m.handleKey(keyMsg("ctrl+p"))
 	m = next.(model)
 	next, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	m = next.(model)
@@ -254,7 +254,7 @@ func TestTheMessageBoxRemembersWhatWasTyped(t *testing.T) {
 
 	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a message")})
 	m = next.(model)
-	next, _ = m.handleKey(keyMsg("enter"))
+	next, _ = m.handleKey(keyMsg("ctrl+enter"))
 	m = next.(model)
 
 	if m.phase != phaseList {
@@ -286,6 +286,89 @@ func TestSpaceIsTypedIntoTheMessage(t *testing.T) {
 	m = next.(model)
 	if m.messageBuf != " a message" {
 		t.Fatalf("the message should have kept its space, got %q", m.messageBuf)
+	}
+}
+
+func TestEnterAddsALineToTheMessage(t *testing.T) {
+	m := testModel("master")
+	m.phase = phaseMessage
+
+	next, _ := m.handleKey(keyMsg("enter"))
+	m = next.(model)
+
+	if m.phase != phaseMessage {
+		t.Fatalf("enter should not leave the message box, got phase %d", m.phase)
+	}
+	if m.messageBuf != "\n" {
+		t.Fatalf("enter should have added a line, got %q", m.messageBuf)
+	}
+}
+
+func TestCtrlEnterCommitsAMessageOfMoreThanOneLine(t *testing.T) {
+	withHome(t)
+
+	m := testModel("master")
+	m.phase = phaseMessage
+	m.history = []string{}
+	m.historyIndex = -1
+	m.files = []FileStatus{{Path: "a.go"}}
+	m.fileSelected = map[string]bool{"a.go": true}
+
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("first")})
+	m = next.(model)
+	next, _ = m.handleKey(keyMsg("enter"))
+	m = next.(model)
+	next, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("second")})
+	m = next.(model)
+
+	if m.messageBuf != "first\nsecond" {
+		t.Fatalf("the message: got %q", m.messageBuf)
+	}
+
+	next, cmd := m.handleKey(keyMsg("ctrl+enter"))
+	m = next.(model)
+	if m.phase != phaseList {
+		t.Fatalf("ctrl+enter should leave the message box, got phase %d", m.phase)
+	}
+	if cmd == nil {
+		t.Fatal("ctrl+enter should have started the commit")
+	}
+
+	// The message that is committed is the whole thing, lines and all.
+	if len(m.history) != 1 || m.history[0] != "first\nsecond" {
+		t.Fatalf("the message should have been remembered whole, got %v", m.history)
+	}
+}
+
+func TestUpAndDownMoveTheCaretBetweenTheLines(t *testing.T) {
+	m := testModel("master")
+	m.phase = phaseMessage
+	m.messageBuf = "first\nsecond"
+	m.messagePos = len(m.messageBuf)
+
+	next, _ := m.handleKey(keyMsg("up"))
+	m = next.(model)
+	if m.messagePos != 5 {
+		t.Fatalf("up should move the caret to the end of the first line, got %d", m.messagePos)
+	}
+
+	next, _ = m.handleKey(keyMsg("down"))
+	m = next.(model)
+	if m.messagePos != 11 {
+		t.Fatalf("down should move the caret back, got %d", m.messagePos)
+	}
+}
+
+func TestTheMessageBoxShowsEveryLine(t *testing.T) {
+	m := testModel("master")
+	m.phase = phaseMessage
+	m.messageBuf = "first\nsecond"
+	m.messagePos = len(m.messageBuf)
+	m.height = 24
+
+	view := visible(m.View())
+	if !strings.Contains(view, "first") || !strings.Contains(view, "second") {
+		t.Fatalf("the box should show both lines:\n%s", view)
 	}
 }
 
@@ -454,6 +537,28 @@ func TestCommitFilesCommitsOnlyWhatWasChosen(t *testing.T) {
 	}
 	if len(remaining) != 1 || remaining[0].Path != "other.txt" {
 		t.Fatalf("the other file should still be there, got %v", remaining)
+	}
+}
+
+func TestCommitFilesCommitsAMessageOfMoreThanOneLine(t *testing.T) {
+	repo := makeTestRepo(t)
+
+	chosen := filepath.Join(repo, "chosen.txt")
+	if err := os.WriteFile(chosen, []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := commitFiles(repo, "first line\nsecond line", []string{"chosen.txt"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Git takes the message as it is, so both lines are in the commit.
+	body := runGitIn(t, repo, "log", "-1", "--format=%B")
+	if !strings.Contains(body, "first line") {
+		t.Fatalf("the first line should be in the commit, got %q", body)
+	}
+	if !strings.Contains(body, "second line") {
+		t.Fatalf("the second line should be in the commit, got %q", body)
 	}
 }
 

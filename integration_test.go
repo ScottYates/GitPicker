@@ -199,7 +199,9 @@ func TestPickerCommitsTheSelectedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(150 * time.Millisecond)
-	if _, err := input.Write([]byte("\r")); err != nil {
+	// Ctrl+Enter finishes the message. A terminal sends it as the same
+	// byte as ctrl+j, which is what a line feed is.
+	if _, err := input.Write([]byte("\n")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -303,7 +305,8 @@ func TestAnsweringYesPushesTheCommitToTheRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(150 * time.Millisecond)
-	if _, err := input.Write([]byte("\r")); err != nil {
+	// Ctrl+Enter finishes the message.
+	if _, err := input.Write([]byte("\n")); err != nil {
 		t.Fatal(err)
 	}
 
