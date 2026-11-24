@@ -15,6 +15,10 @@ package main
 // The pointer is only ever used for the row that is picked, so that the
 // mark means the same thing everywhere it is seen.
 //
+// The branch that is checked out is at the top of the list, whatever the
+// sort or the query says, because it is the branch the reader is most
+// likely to want to see. The pointer starts on it.
+//
 // The list takes every row the chrome does not need, so it fills the screen
 // and reflows when the window is resized.
 //
@@ -33,6 +37,10 @@ package main
 // the question mark opens a panel with every key there is. Ctrl+O shows or
 // hides what git last said, and Ctrl+U fetches the newest build from the
 // release page and puts it in place of the one that is running.
+//
+// The panels that show text scroll: the arrows move a line and the page keys
+// move a screenful. The position never runs past the end of the text, so a
+// panel is never left empty.
 
 import (
 	"fmt"
@@ -356,6 +364,9 @@ type model struct {
 	outputTitle  string
 	outputScroll int
 
+	// errorScroll is how far the error panel has been scrolled.
+	errorScroll int
+
 	// lastOutput is the output of the last thing git said, kept after the
 	// panel has been closed so that it can be shown again.
 	lastOutput      string
@@ -451,7 +462,7 @@ func (m *model) rebuildLabels() {
 
 // refilter re-applies the query to the branch list.
 func (m *model) refilter() {
-	m.matches = filterBranches(m.query, m.branches, m.labels)
+	m.matches = hoistCurrent(filterBranches(m.query, m.branches, m.labels), m.branches, m.current)
 	m.clampCursor()
 }
 
@@ -561,6 +572,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setBranches(branches)
 		} else {
 			m.rebuildLabels()
+			m.refilter()
 		}
 		m.selectByName(selected)
 		if msg.newName != "" {
@@ -1178,18 +1190,37 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleErrorKey acts on a key press on the error panel.
 //
-// The error is already on screen in full, and the same text goes to stderr
-// when the program exits, so there is nothing left to wait for.
-//
-// Only escape and enter leave the panel. The console pastes the clipboard
-// when the mouse is clicked in the window, and a stray click should not
-// close the panel while the error is being read.
+// The error is on screen to be read, so the arrows and the page keys scroll
+// it. Only escape and enter leave the panel. The console pastes the
+// clipboard when the mouse is clicked in the window, and a stray click
+// should not close the panel while the error is being read.
 func (m model) handleErrorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch keyName(msg) {
 	case "esc", "enter":
 		return m, tea.Quit
+	case "up":
+		m.scrollError(-1)
+		return m, nil
+	case "down":
+		m.scrollError(1)
+		return m, nil
+	case "pgup":
+		m.scrollError(-m.errorRows())
+		return m, nil
+	case "pgdown":
+		m.scrollError(m.errorRows())
+		return m, nil
 	}
 	return m, nil
+}
+
+// scrollError moves the error panel by a number of lines.
+//
+// The position is kept inside the text, so scrolling cannot leave the panel
+// empty.
+func (m *model) scrollError(delta int) {
+	lines := m.errorLines(m.panelWidth() - 2)
+	m.errorScroll = clampScroll(m.errorScroll+delta, len(lines), m.errorRows())
 }
 
 // handleListKey acts on a key press in the branch list.
@@ -1554,24 +1585,28 @@ func (m model) handleOutputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "ctrl+o":
 		return m.closeOutput()
 	case "up":
-		if m.outputScroll > 0 {
-			m.outputScroll--
-		}
+		m.scrollOutput(-1)
 		return m, nil
 	case "down":
-		m.outputScroll++
+		m.scrollOutput(1)
 		return m, nil
 	case "pgup":
-		m.outputScroll -= m.outputRows()
-		if m.outputScroll < 0 {
-			m.outputScroll = 0
-		}
+		m.scrollOutput(-m.outputRows())
 		return m, nil
-	case "pgdn":
-		m.outputScroll += m.outputRows()
+	case "pgdown":
+		m.scrollOutput(m.outputRows())
 		return m, nil
 	}
 	return m, nil
+}
+
+// scrollOutput moves the output panel by a number of lines.
+//
+// The position is kept inside the text, so scrolling cannot leave the panel
+// empty.
+func (m *model) scrollOutput(delta int) {
+	lines := m.outputLines(m.panelWidth() - 2)
+	m.outputScroll = clampScroll(m.outputScroll+delta, len(lines), m.outputRows())
 }
 
 // closeOutput puts the output panel away.
@@ -1853,8 +1888,11 @@ func openURLCmd(address string) tea.Cmd {
 }
 
 // outputRows is how many lines of output fit on the screen.
+//
+// The panel has a heading, a blank line under it, a rule at the bottom and
+// the hint below that.
 func (m model) outputRows() int {
-	rows := m.height - 6
+	rows := m.height - 4
 	if rows < 1 {
 		rows = 1
 	}
@@ -2051,13 +2089,7 @@ func (m model) viewOutput() string {
 	lines := m.outputLines(width - 2)
 	rows := m.outputRows()
 
-	start := m.outputScroll
-	if start > len(lines) {
-		start = len(lines)
-	}
-	if start < 0 {
-		start = 0
-	}
+	start := clampScroll(m.outputScroll, len(lines), rows)
 	end := start + rows
 	if end > len(lines) {
 		end = len(lines)
@@ -2067,7 +2099,7 @@ func (m model) viewOutput() string {
 	}
 	b.WriteString(panelBottom(width) + "\n")
 
-	position := fmt.Sprintf("%d of %d", end, len(lines))
+	position := scrollPosition(start, len(lines), rows)
 	b.WriteString(styleInfo.Render("esc closes the output, arrows scroll (" + position + ")"))
 	return b.String()
 }
@@ -2157,10 +2189,11 @@ func (m model) upstreamFor(name string) string {
 	return ""
 }
 
-// viewError draws a fatal error in full.
+// viewError draws a fatal error.
 //
 // The same text is written to stderr when the program exits, so this is for
-// reading rather than for catching.
+// reading rather than for catching. The error is usually longer than the
+// screen, so it scrolls.
 func (m model) viewError() string {
 	var b strings.Builder
 
@@ -2180,20 +2213,39 @@ func (m model) viewError() string {
 
 	b.WriteString(panelRule(width, "error") + "\n")
 
-	for _, line := range m.errorLines(width - 2) {
+	lines := m.errorLines(width - 2)
+	rows := m.errorRows()
+	start := clampScroll(m.errorScroll, len(lines), rows)
+	end := start + rows
+	if end > len(lines) {
+		end = len(lines)
+	}
+	for _, line := range lines[start:end] {
 		b.WriteString(styleBorder.Render(vertical+" ") + padToWidth(line, width-2) + "\n")
 	}
 	b.WriteString(panelBottom(width) + "\n")
 
-	b.WriteString(styleInfo.Render("esc to exit"))
+	position := scrollPosition(start, len(lines), rows)
+	b.WriteString(styleInfo.Render("esc exits, arrows scroll (" + position + ")"))
 	return b.String()
 }
 
-// errorLines are the lines the error panel holds.
+// errorRows is how many lines of the error fit on the screen.
+//
+// The panel has a heading, a blank line, a rule above and below the text
+// and the hint under it.
+func (m model) errorRows() int {
+	rows := m.height - 5
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
+}
+
+// errorLines are the lines of the error.
 //
 // A long line is wrapped rather than cut, so the whole error is on screen.
-// If there is more of it than the screen can take, the rest is left out here
-// and is on stderr when the program exits.
+// The panel scrolls through them, so nothing is left out.
 func (m model) errorLines(width int) []string {
 	if width < 8 {
 		width = 8
@@ -2210,21 +2262,6 @@ func (m model) errorLines(width int) []string {
 	var lines []string
 	for _, line := range strings.Split(detail, "\n") {
 		lines = append(lines, wrapText(line, width)...)
-	}
-
-	// The panel needs room for its own rules and the instruction below it.
-	room := m.height - 5
-	if m.height <= 0 {
-		room = 20
-	}
-	if room < 1 {
-		room = 1
-	}
-	if len(lines) > room {
-		// The note about the rest takes the last line of the room.
-		hidden := len(lines) - (room - 1)
-		lines = lines[:room-1]
-		lines = append(lines, fmt.Sprintf("... %d more lines, see the terminal", hidden))
 	}
 	return lines
 }

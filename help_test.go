@@ -236,7 +236,10 @@ func TestTheUpdateSaysWhenThereIsNothingNewer(t *testing.T) {
 	m.width = 80
 	m.height = 20
 
-	next, _ := m.Update(updateDoneMsg{version: "v1.10"})
+	// The published build is the one that is running, so there is nothing
+	// newer. The version of the program is used, so that the test does not
+	// have to be changed every time the version is.
+	next, _ := m.Update(updateDoneMsg{version: version})
 	m = next.(model)
 	if m.updating {
 		t.Fatal("the update should be finished")

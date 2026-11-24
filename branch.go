@@ -95,6 +95,31 @@ func sortBranches(branches []Branch, mode string) {
 	})
 }
 
+// hoistCurrent puts the branch that is checked out at the top of the list.
+//
+// It is the branch the reader is most likely to want to see, so it leads
+// whatever the sort or the query says. It is only there while the query
+// matches it, because a filter that does not match it is the reader saying
+// that they do not want to see it.
+func hoistCurrent(matches []match, branches []Branch, current string) []match {
+	if current == "" {
+		return matches
+	}
+	for i, entry := range matches {
+		if branches[entry.index].Name != current {
+			continue
+		}
+		if i == 0 {
+			return matches
+		}
+		// The rows above it move down one to make room.
+		copy(matches[1:i+1], matches[0:i])
+		matches[0] = entry
+		return matches
+	}
+	return matches
+}
+
 // formatAge is a compact relative age: 15s, 12m, 3h, 5d, 2mo, 1y.
 func formatAge(timestamp int64, now int64) string {
 	if timestamp == 0 {

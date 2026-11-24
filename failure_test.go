@@ -221,7 +221,7 @@ func TestTheErrorPanelShowsTheWholeError(t *testing.T) {
 	if !strings.Contains(panel, "error: Automatic merge failed") {
 		t.Fatalf("the whole error should be on screen:\n%s", panel)
 	}
-	if !strings.Contains(panel, "esc to exit") {
+	if !strings.Contains(panel, "esc exits") {
 		t.Fatalf("the panel should say how to leave:\n%s", panel)
 	}
 }
@@ -250,7 +250,7 @@ func TestTheErrorPanelWrapsALongLine(t *testing.T) {
 	}
 }
 
-func TestTheErrorPanelSaysHowMuchWasLeftOut(t *testing.T) {
+func TestTheErrorPanelKeepsEveryLine(t *testing.T) {
 	m := testModel("master")
 	m.width = 60
 	m.height = 10
@@ -261,16 +261,19 @@ func TestTheErrorPanelSaysHowMuchWasLeftOut(t *testing.T) {
 	}
 	m.fatal = &GitError{Code: 1, Message: "git pull failed", Detail: b.String()}
 
-	panel := visible(m.viewError())
-
-	if !strings.Contains(panel, "more lines, see the terminal") {
-		t.Fatalf("the panel should say what was left out:\n%s", panel)
+	// Nothing is left out of the error, because the panel scrolls through
+	// it rather than cutting it short.
+	if got := len(m.errorLines(58)); got != 41 {
+		t.Fatalf("the panel holds %d lines, want 41", got)
 	}
-	// The room is the height less the header, the rules and the
-	// instruction, and the note about the rest takes one of those lines.
-	room := 10 - 5
-	if got := len(m.errorLines(58)); got != room {
-		t.Fatalf("the panel holds %d lines, want %d", got, room)
+
+	panel := visible(m.viewError())
+	if strings.Contains(panel, "more lines, see the terminal") {
+		t.Fatalf("the panel should not say what was left out:\n%s", panel)
+	}
+	// The panel shows the first page of the error.
+	if !strings.Contains(panel, "a line of the error") {
+		t.Fatalf("the error should be on screen:\n%s", panel)
 	}
 }
 

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestRenderSnapshot prints the picker as it is drawn, so the layout can be
 // inspected by eye.
@@ -57,5 +60,23 @@ func TestRenderSnapshot(t *testing.T) {
 	// The question about the build that was just put in place.
 	m.phase = phaseUpdateConfirm
 	m.updatedTo = "v1.11"
+	t.Log("\n" + m.View())
+
+	// The git output, with the text scrolled down.
+	m.phase = phaseOutput
+	m.outputTitle = "git switch master"
+	m.output = "stdout:\nswitched to branch 'master'\n" +
+		strings.Repeat("a line of the output\n", 20)
+	m.outputScroll = 6
+	t.Log("\n" + m.View())
+
+	// The error panel, with the error scrolled down.
+	m.phase = phaseError
+	m.fatal = &GitError{
+		Code:    1,
+		Message: "git pull failed",
+		Detail:  "stderr:\nfatal: the merge stopped here\n" + strings.Repeat("a line of the error\n", 20),
+	}
+	m.errorScroll = 4
 	t.Log("\n" + m.View())
 }

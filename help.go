@@ -7,7 +7,6 @@ package main
 // each. The question mark opens it.
 
 import (
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -125,7 +124,7 @@ func (m model) handleHelpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.helpScroll = 0
 		}
 		return m, nil
-	case "pgdn":
+	case "pgdown":
 		m.helpScroll += m.helpRows()
 		if max := len(helpLines()) - m.helpRows(); m.helpScroll > max {
 			m.helpScroll = max
@@ -148,13 +147,7 @@ func (m model) viewHelp() string {
 	lines := helpLines()
 	rows := m.helpRows()
 
-	start := m.helpScroll
-	if start > len(lines) {
-		start = len(lines)
-	}
-	if start < 0 {
-		start = 0
-	}
+	start := clampScroll(m.helpScroll, len(lines), rows)
 	end := start + rows
 	if end > len(lines) {
 		end = len(lines)
@@ -170,7 +163,7 @@ func (m model) viewHelp() string {
 	}
 	b.WriteString(panelBottom(width) + "\n")
 
-	position := fmt.Sprintf("%d of %d", end, len(lines))
+	position := scrollPosition(start, len(lines), rows)
 	b.WriteString(styleInfo.Render("esc closes the help, arrows scroll (" + position + ")"))
 	return b.String()
 }

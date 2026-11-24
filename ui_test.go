@@ -12,6 +12,10 @@ import (
 )
 
 // keyMsg builds the key press a test wants to send.
+//
+// The page keys are sent as the key type bubbletea gives them, because a
+// test that sends the text "pgdown" would not be testing the key the
+// console sends.
 func keyMsg(name string) tea.KeyMsg {
 	switch name {
 	case "enter":
@@ -24,6 +28,10 @@ func keyMsg(name string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyUp}
 	case "down":
 		return tea.KeyMsg{Type: tea.KeyDown}
+	case "pgup":
+		return tea.KeyMsg{Type: tea.KeyPgUp}
+	case "pgdown", "pgdn":
+		return tea.KeyMsg{Type: tea.KeyPgDown}
 	case "ctrl+p":
 		return tea.KeyMsg{Type: tea.KeyCtrlP}
 	case "ctrl+n":

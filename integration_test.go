@@ -399,7 +399,7 @@ func TestThePickerEndsWithGitsExitCodeWhenAPullFails(t *testing.T) {
 		return strings.Contains(output.String(), "git pull failed")
 	})
 	waitFor(t, "the error panel", func() bool {
-		return strings.Contains(output.String(), "esc to exit")
+		return strings.Contains(output.String(), "esc exits")
 	})
 
 	// Escape leaves, and the picker ends by itself rather than sitting

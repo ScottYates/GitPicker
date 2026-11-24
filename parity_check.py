@@ -135,11 +135,25 @@ def make_fixture() -> str:
     return work
 
 
+def current_first(labels: list[str]) -> list[str]:
+    """Put the checked out branch at the top of the list.
+
+    The Go picker shows the branch that is checked out first, whatever the
+    sort or the query says. The Python picker does not, so the expected list
+    is moved here to make the difference the only one between the two.
+    """
+    for i, label in enumerate(labels):
+        if label.startswith("* "):
+            return [label] + labels[:i] + labels[i + 1 :]
+    return labels
+
+
 def python_labels(work: str) -> list[str]:
     branches = gp.sort_branches(gp.list_branches(work))
     width = gp.label_name_width(branches)
     current = gp.current_branch(work)
-    return [gp.display_label(b, current, FIXED_NOW, width) for b in branches]
+    labels = [gp.display_label(b, current, FIXED_NOW, width) for b in branches]
+    return current_first(labels)
 
 
 def python_filtered(work: str, query: str) -> list[str]:
@@ -148,10 +162,10 @@ def python_filtered(work: str, query: str) -> list[str]:
     current = gp.current_branch(work)
     labels = [gp.display_label(b, current, FIXED_NOW, width) for b in branches]
     if not query:
-        return labels
+        return current_first(labels)
     choices = [{"name": label} for label in labels]
     matched = asyncio.run(fuzzy_match(query, choices, key="name", scorer=fzy_scorer))
-    return [item["name"] for item in matched]
+    return current_first([item["name"] for item in matched])
 
 
 def go_dump(work: str, query: str) -> list[str]:

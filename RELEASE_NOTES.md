@@ -1,58 +1,43 @@
-## git-picker v1.10
+## git-picker v1.11
 
-The picker can update itself, the keys it understands are written down in a
-panel, and the hint at the bottom no longer changes before it has to.
+The branch you are on is now at the top of the list, and the text panels
+scroll properly.
 
-### The picker can update itself
+### The branch you are on is at the top
 
-Ctrl+U asks GitHub which build is the newest. If it is newer than the one
-that is running, it is fetched and put in place of the running one. The
-picker then asks whether the new build should be started, and hands the
-console over to it.
+The branch that is checked out is now the first row of the list, whatever
+the sort says and whatever you have typed to filter it. It is the branch
+you are most likely to want to see, and before it was buried somewhere in
+the middle whenever it was not one of the pinned names.
 
-Windows will not let a running program be overwritten, so the old build is
-renamed out of the way and the new one takes its name. The old build is
-cleared away the next time the picker starts, when nothing is holding it
-open any more.
+The pointer starts on it, so the picker opens on the branch you are on
+rather than on the top of the sort.
 
-The build that is fetched is the one published on the release page, so the
-picker and the releases stay in step. When there is nothing newer the status
-line says so and nothing is written to disk. When the picker is running a
-build that is newer than the published one, it says that too.
+The pinned branches (main, master, develop and the rest) are still pinned
+at the top of everything else. They are only pushed down by the branch you
+are actually on.
 
-The update needs the network, and it fails quietly enough: the reason is
-shown in the status line and the picker carries on.
+A filter that does not match the branch you are on still hides it. The
+filter is you saying that you do not want to see it.
 
-### The keys are written down
+### The text panels scroll
 
-The question mark opens a panel with every key there is and what it does.
-The panel scrolls when there is more of it than the screen can take.
+Page up and page down now work in the panels that show text. The bug was
+that the panels were listening for a key name that the console never
+sends, so the page down key did nothing at all.
 
-The question mark is only a key in the branch list. In the commit message
-it is ordinary text, as it always was.
+The panels that scroll are the git output (ctrl+o), the help panel (the
+question mark) and the error panel.
 
-### The hint at the bottom stays put
+The scrolling also stops at the end of the text. Before, scrolling past the
+end left the panel empty, which looked like the picker had stopped
+working. The position is now shown at the bottom of the panel, and it says
+when you are at the end of the text.
 
-The hint used to change to a shorter form as soon as the window was a little
-narrower than the whole of it, which was a long way before there was any
-need for it. It is now written on two lines, and only changes when the
-window is too narrow for both of them.
+### The error panel scrolls too
 
-The hint in the commit message box does the same.
-
-### What git said can be shown again
-
-Ctrl+O shows what git last said, or hides it while it is on screen. The text
-is kept after the panel has been closed, so it can be read again without
-running the command once more. The output still opens by itself after every
-git command, as it did before.
-
-### The pointer is only for the picked row
-
-The arrow was in front of the header and in front of the search box as well
-as in front of the picked branch, so the same mark meant three different
-things. It is now only in front of the row that is picked, and in front of
-the choice that is pointed at when there is a question to answer.
+The error panel used to cut the error off and say how many lines were left
+out. It now scrolls, so the whole error is there to be read.
 
 ### Keys
 
@@ -60,7 +45,7 @@ the choice that is pointed at when there is a question to answer.
 | --- | --- |
 | type | filter the list |
 | up / down | move the pointer |
-| pgup / pgdn | move a screenful |
+| pgup / pgdn | move a screenful, in the list and in the text panels |
 | ctrl+s | sort by time or by name, pinned branches first |
 | ctrl+n | switch to the highlighted branch and make a new one from it |
 | ctrl+c | commit: pick the files, then write the message |

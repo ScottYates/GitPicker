@@ -2,7 +2,7 @@ package main
 
 // git-picker: an interactive git branch picker that switches and pulls.
 //
-// Version: v1.10
+// Version: v1.11
 //
 // Finds the repository root, lists local and remote branches in a
 // fuzzy-selectable menu, switches to the chosen branch and pulls.
@@ -45,7 +45,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const version = "v1.10"
+const version = "v1.11"
 
 func main() {
 	os.Exit(mainExitCode(os.Args[1:], os.Stdout, os.Stderr))
@@ -264,7 +264,8 @@ func workingDir() string {
 //
 // This is what the parity check compares against the Python picker, so the
 // two can be held to the same output without either needing a terminal. With
-// a query it prints the fuzzy matches in rank order instead.
+// a query it prints the fuzzy matches in rank order instead, with the
+// branch that is checked out at the top either way.
 func dumpLabels(root string, now int64, query string, stdout io.Writer) error {
 	branches, err := listBranches(root)
 	if err != nil {
@@ -278,13 +279,8 @@ func dumpLabels(root string, now int64, query string, stdout io.Writer) error {
 		labels[i] = displayLabel(branch, current, now, width)
 	}
 
-	if query == "" {
-		for _, label := range labels {
-			fmt.Fprintln(stdout, label)
-		}
-		return nil
-	}
-	for _, entry := range filterBranches(query, branches, labels) {
+	matches := hoistCurrent(filterBranches(query, branches, labels), branches, current)
+	for _, entry := range matches {
 		fmt.Fprintln(stdout, labels[entry.index])
 	}
 	return nil

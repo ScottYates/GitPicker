@@ -5,9 +5,10 @@ This is what you need to work on git-picker without reading the whole source fro
 ## What it is
 
 A single file Windows program that picks a git branch. It finds the
-repository, lists the local and remote branches in a fuzzy searchable menu,
-and switches to the one you pick and pulls it. It also commits, pushes, and
-clones. It can update itself from the release page, with ctrl+u.
+repository, lists the local and remote branches in a fuzzy searchable menu
+with the branch you are on at the top, and switches to the one you pick and
+pulls it. It also commits, pushes, and clones. It can update itself from
+the release page, with ctrl+u.
 
 It is written in Go with [bubbletea](https://github.com/charmbracelet/bubbletea)
 for the terminal interface and [lipgloss](https://github.com/charmbracelet/lipgloss)
@@ -30,6 +31,7 @@ Go side is free to draw whatever it likes.
 | `fuzzy.go` | the fuzzy matching and its ranking |
 | `message.go` | the commit message as text, and where the caret is |
 | `help.go` | the panel with every key in it, and the help it shows |
+| `scroll.go` | the scrolling the text panels share, and the clamp on it |
 | `update.go` | the self update: the release page, the download, the swap |
 | `input.go` | the seam between the picker and the keyboard |
 | `input_windows.go` | the console reader, and the key map it uses |
@@ -193,6 +195,23 @@ inside the model.
 that is picked, and in front of the choice that is pointed at when there is a
 question to answer. The header and the search line are indented by two
 spaces instead, so that they line up with the branches below them.
+
+**The key names are not what you would guess.** Bubbletea calls the page
+down key "pgdown", not "pgdn", and the page up key "pgup". A handler that
+matches the wrong name never fires, and a test that sends the text "pgdn"
+as runes will happily test a branch that the console never takes. The test
+helper in `ui_test.go` sends the real key types for this reason.
+
+**A scroll position is clamped to the text.** The position is the line at
+the top of the panel, so the last page that has anything on it starts at
+`total-rows`. Without the clamp, scrolling past the end leaves the panel
+empty, which looks like the picker has hung.
+
+**The branch you are on is at the top of the list.** `hoistCurrent` moves it
+there after the filter has run, so it leads the list whatever the sort or
+the query says. It is only there while the query matches it. The Python
+picker does not do this, so `parity_check.py` moves the expected list the
+same way before it compares.
 
 ## Where it could go next
 
