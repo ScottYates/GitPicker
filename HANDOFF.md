@@ -1,7 +1,6 @@
 # git-picker, a handoff
 
-This is what you need to work on git-picker without reading the whole
-source from the top.
+This is what you need to work on git-picker without reading the whole source from the top.
 
 ## What it is
 
