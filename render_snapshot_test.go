@@ -47,4 +47,15 @@ func TestRenderSnapshot(t *testing.T) {
 	m.status = "switching to master..."
 	m.busy = true
 	t.Log("\n" + m.View())
+
+	// The help panel, with every key in it.
+	m.phase = phaseHelp
+	m.status = ""
+	m.busy = false
+	t.Log("\n" + m.View())
+
+	// The question about the build that was just put in place.
+	m.phase = phaseUpdateConfirm
+	m.updatedTo = "v1.11"
+	t.Log("\n" + m.View())
 }

@@ -4,13 +4,16 @@ package main
 //
 // The layout is the one the Python picker draws:
 //
-//	row 1        ? <repo>  Switch to branch:
-//	row 2        pointer <query>  [pos/count]  sort: mode
+//	row 1        <repo>  Switch to branch:
+//	row 2        <query>  [pos/count]  sort: mode
 //	rows 3..n    the branch list, one row per branch
 //	row n-2      +-- will run ---------------
 //	row n-1      | git switch <branch>
 //	row n        | git pull
-//	row n+1      the instructions
+//	row n+1      the instructions, on one row or two
+//
+// The pointer is only ever used for the row that is picked, so that the
+// mark means the same thing everywhere it is seen.
 //
 // The list takes every row the chrome does not need, so it fills the screen
 // and reflows when the window is resized.
@@ -25,6 +28,11 @@ package main
 //
 // The status line carries a spinner while git is working, so a slow command
 // does not look like a hang.
+//
+// The hint at the bottom wraps onto a second line before it is cut short, and
+// the question mark opens a panel with every key there is. Ctrl+O shows or
+// hides what git last said, and Ctrl+U fetches the newest build from the
+// release page and puts it in place of the one that is running.
 
 import (
 	"fmt"
@@ -60,52 +68,89 @@ const (
 	minPanelWidth = 24
 
 	// chromeRows are the rows the picker spends on everything except the
-	// list: the message, the search line, the panel and the instructions.
-	chromeRows = 3 + previewRows
+	// list and the instructions: the message line, the search line and the
+	// command panel. The instructions are counted separately, because they
+	// take one row or two.
+	chromeRows = 2 + previewRows
 
-	instruction = "type to filter, arrows/pgup/pgdn, ctrl+s sort, ctrl+n new branch, ctrl+c commit, ctrl+p push, ctrl+g clone, esc exits"
-
-	filesInstruction   = "arrows to move, space to select, enter to continue, esc to cancel"
-	messageInstruction = "ctrl+enter to commit, enter for a new line, up/down for the lines, ctrl+p/n for the last messages, esc to go back"
+	filesInstruction = "arrows to move, space to select, enter to continue, esc to cancel"
 )
 
-// messageInstructionFor picks the longest hint that fits the terminal.
+// instruction is the hint at the bottom of the branch list.
 //
-// The message box has more to say than the branch list does, so it has
-// shorter forms for a narrow terminal.
-func messageInstructionFor(width int) string {
-	choices := []string{
-		messageInstruction,
-		"ctrl+enter to commit, enter for a new line, up/down for the lines, ctrl+p/n history, esc to go back",
-		"ctrl+enter to commit, enter for a new line, esc to go back",
-		"ctrl+enter to commit, esc to go back",
-	}
-	for _, choice := range choices {
-		if len(choice) <= width {
-			return choice
-		}
-	}
-	return "esc to go back"
+// The keys are longer than a narrow window, so they are written on two lines
+// rather than being cut short.
+var instruction = []string{
+	"type to filter, arrows/pgup/pgdn, ctrl+s sort, ctrl+n new, ctrl+c commit,",
+	"ctrl+p push, ctrl+g clone, ctrl+o output, ctrl+u update, ? help, esc exits",
 }
 
-// instructionFor picks the longest hint that fits the terminal.
+// messageInstruction is the hint at the bottom of the message box.
+var messageInstruction = []string{
+	"ctrl+enter to commit, enter for a new line, up/down for the lines,",
+	"ctrl+p/n for the last messages, esc to go back",
+}
+
+// shortInstructions are the hint in fewer words, for a window that is too
+// narrow for the whole of it.
+var shortInstructions = []string{
+	"type to filter, pgup/pgdn, ctrl+s sort, ctrl+n new, ctrl+c commit, ctrl+p push, ctrl+g clone, ctrl+o output, ctrl+u update, ? help, esc exits",
+	"pgup/pgdn, ctrl+s sort, ctrl+n new, ctrl+c commit, ctrl+p push, ctrl+g clone, ctrl+o output, ctrl+u update, ? help, esc exits",
+	"ctrl+s sort, ctrl+n new, ctrl+c commit, ctrl+p push, ctrl+g clone, ctrl+o output, ctrl+u update, ? help, esc exits",
+	"ctrl+c commit, ctrl+p push, ctrl+g clone, ctrl+o output, ctrl+u update, ? help, esc exits",
+	"ctrl+o output, ctrl+u update, ? help, esc exits",
+	"esc exits",
+}
+
+// shortMessageInstructions are the hint of the message box in fewer words.
+var shortMessageInstructions = []string{
+	"ctrl+enter to commit, enter for a new line, up/down for the lines, ctrl+p/n history, esc to go back",
+	"ctrl+enter to commit, enter for a new line, esc to go back",
+	"ctrl+enter to commit, esc to go back",
+}
+
+// instructionLines is the hint at the bottom of the branch list.
 //
-// The full list of keys is long, and a hint that wraps would push the view
-// past the bottom of the screen, so the shorter variants are used when the
-// terminal is narrow.
-func instructionFor(width int) string {
-	choices := []string{
-		instruction,
-		"type to filter, pgup/pgdn, ctrl+s sort, ctrl+n new, ctrl+c commit, ctrl+p push, ctrl+g clone, esc exits",
-		"pgup/pgdn, ctrl+s sort, ctrl+n new, ctrl+c commit, ctrl+p push, ctrl+g clone, esc exits",
-		"ctrl+c commit, ctrl+p push, ctrl+g clone, esc exits",
+// The full list of keys is longer than a narrow window, so it is written on
+// two lines instead of being cut short. Only when the window is too narrow
+// for both of them are the shorter forms used.
+func instructionLines(width int) []string {
+	return fitLines(instruction, shortInstructions, width)
+}
+
+// messageInstructionLines is the hint at the bottom of the message box.
+//
+// The message box has more to say than the branch list does, so it has
+// shorter forms for a narrow terminal. As in the branch list, the hint is
+// written on two lines before it is cut short.
+func messageInstructionLines(width int) []string {
+	return fitLines(messageInstruction, shortMessageInstructions, width)
+}
+
+// fitLines picks the lines of a hint that fit the width.
+//
+// The full hint is used when every one of its lines fits. Otherwise the
+// shorter forms are tried, and the shortest of them that fits is used.
+func fitLines(full []string, short []string, width int) []string {
+	if width < 20 {
+		width = 20
 	}
-	for _, choice := range choices {
-		if len(choice) <= width {
-			return choice
+	fits := true
+	for _, line := range full {
+		if len(line) > width {
+			fits = false
+			break
 		}
 	}
-	return "esc exits"
+	if fits {
+		return full
+	}
+	for _, choice := range short {
+		if len(choice) <= width {
+			return []string{choice}
+		}
+	}
+	return []string{"esc exits"}
 }
 
 var (
@@ -143,6 +188,8 @@ const (
 	phaseClone
 	phaseClipboard
 	phaseRemove
+	phaseHelp
+	phaseUpdateConfirm
 )
 
 // What happens once the git output has been closed.
@@ -309,6 +356,11 @@ type model struct {
 	outputTitle  string
 	outputScroll int
 
+	// lastOutput is the output of the last thing git said, kept after the
+	// panel has been closed so that it can be shown again.
+	lastOutput      string
+	lastOutputTitle string
+
 	// afterOutput is what happens once the output has been closed.
 	afterOutput string
 
@@ -336,6 +388,21 @@ type model struct {
 	// The clock for the timings shown in the status line.
 	switchStarted time.Time
 	pullStarted   time.Time
+
+	// helpScroll is how far the help panel has been scrolled.
+	helpScroll int
+
+	// updating is true while the picker is fetching a newer build.
+	updating bool
+
+	// updatedTo is the version that was put in place, and updateChoice is
+	// the answer to the question about starting it.
+	updatedTo    string
+	updateChoice int
+
+	// relaunch is the build that should take the console over when the
+	// picker is done with it.
+	relaunch string
 
 	fetchCh chan fetchResult
 }
@@ -408,8 +475,11 @@ func (m model) branchAt(entry match) *Branch {
 }
 
 // listRows is how many rows the list may occupy.
+//
+// The hint at the bottom takes a row or two, depending on how wide the
+// window is, so the list gives up a row when the hint is wrapped.
 func (m *model) listRows() int {
-	rows := m.height - chromeRows
+	rows := m.height - chromeRows - len(instructionLines(m.width))
 	if rows < 1 {
 		rows = 1
 	}
@@ -619,6 +689,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case updateDoneMsg:
+		m.updating = false
+		if msg.err != nil {
+			m.status = "the update failed: " + firstLine(msg.err.Error())
+			m.statusErr = true
+			return m, nil
+		}
+		if !msg.updated {
+			if msg.version == version {
+				m.status = "already on the newest build (" + msg.version + ")"
+			} else {
+				m.status = "this build is newer than the published one (" + msg.version + ")"
+			}
+			m.statusErr = false
+			return m, nil
+		}
+		// The new build is in place, so the user is asked whether it
+		// should be started now.
+		m.phase = phaseUpdateConfirm
+		m.updatedTo = msg.version
+		m.updateChoice = 0
+		m.status = ""
+		m.statusErr = false
+		return m, nil
+
 	case spinnerTickMsg:
 		// The spinner only goes on while git is working, so it stops by
 		// itself as soon as the work is done.
@@ -658,6 +753,9 @@ func plural(count int) string {
 // The commands are named as well, because the output of a switch and the
 // output of the pull that follows it are shown together and it should be
 // clear that both are there.
+//
+// The text is also kept aside, so that it can be shown again after the
+// panel has been closed.
 func (m *model) addOutput(title string, output string) {
 	if output == "" {
 		return
@@ -668,9 +766,11 @@ func (m *model) addOutput(title string, output string) {
 	m.output += output
 	if m.outputTitle == "" {
 		m.outputTitle = title
-		return
+	} else {
+		m.outputTitle += ", " + title
 	}
-	m.outputTitle += ", " + title
+	m.lastOutput = m.output
+	m.lastOutputTitle = m.outputTitle
 }
 
 // showOutput puts the git output on screen.
@@ -1068,6 +1168,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleClipboardKey(msg)
 	case phaseRemove:
 		return m.handleRemoveKey(msg)
+	case phaseHelp:
+		return m.handleHelpKey(msg)
+	case phaseUpdateConfirm:
+		return m.handleUpdateConfirmKey(msg)
 	}
 	return m.handleListKey(msg)
 }
@@ -1127,6 +1231,27 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		m.statusErr = false
 		return m, nil
+	case "?":
+		// The question mark opens the help, which lists every key.
+		m.phase = phaseHelp
+		m.helpScroll = 0
+		m.status = ""
+		m.statusErr = false
+		return m, nil
+	case "ctrl+o":
+		// Ctrl+O shows what git last said, or hides it if it is on
+		// screen already.
+		return m.toggleOutput()
+	case "ctrl+u":
+		// Ctrl+U fetches the newest build and puts it in place of the
+		// one that is running.
+		if m.updating {
+			return m, nil
+		}
+		m.updating = true
+		m.status = "checking for a newer build..."
+		m.statusErr = false
+		return m, updateCmd(version)
 	case "enter":
 		if len(m.matches) > 0 {
 			return m.startOrDefer(pendingAction{
@@ -1426,23 +1551,8 @@ func (m model) handleOutputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := keyName(msg)
 
 	switch key {
-	case "esc":
-		m.phase = phaseList
-		step := m.afterOutput
-		m.afterOutput = afterNothing
-		m.output = ""
-		m.outputTitle = ""
-		switch step {
-		case afterPushConfirm:
-			m.phase = phasePushConfirm
-			m.pushChoice = 0
-			return m, nil
-		case afterPRConfirm:
-			m.phase = phasePRConfirm
-			m.prChoice = 0
-			return m, nil
-		}
-		return m.resumePending()
+	case "esc", "ctrl+o":
+		return m.closeOutput()
 	case "up":
 		if m.outputScroll > 0 {
 			m.outputScroll--
@@ -1461,6 +1571,49 @@ func (m model) handleOutputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.outputScroll += m.outputRows()
 		return m, nil
 	}
+	return m, nil
+}
+
+// closeOutput puts the output panel away.
+//
+// What happens after that depends on what was being done, so it is kept for
+// the closing.
+func (m model) closeOutput() (tea.Model, tea.Cmd) {
+	m.phase = phaseList
+	step := m.afterOutput
+	m.afterOutput = afterNothing
+	m.output = ""
+	m.outputTitle = ""
+	switch step {
+	case afterPushConfirm:
+		m.phase = phasePushConfirm
+		m.pushChoice = 0
+		return m, nil
+	case afterPRConfirm:
+		m.phase = phasePRConfirm
+		m.prChoice = 0
+		return m, nil
+	}
+	return m.resumePending()
+}
+
+// toggleOutput shows what git last said, or puts it away when it is on
+// screen already.
+//
+// The text is kept after the panel is closed, so it can be read again
+// without running the command once more.
+func (m model) toggleOutput() (tea.Model, tea.Cmd) {
+	if m.phase == phaseOutput {
+		return m.closeOutput()
+	}
+	if m.lastOutput == "" {
+		m.status = "nothing from git yet"
+		m.statusErr = false
+		return m, nil
+	}
+	m.output = m.lastOutput
+	m.outputTitle = m.lastOutputTitle
+	m.showOutput()
 	return m, nil
 }
 
@@ -1807,6 +1960,10 @@ func (m model) View() string {
 		return m.viewError()
 	case phaseOutput:
 		return m.viewOutput()
+	case phaseHelp:
+		return m.viewHelp()
+	case phaseUpdateConfirm:
+		return m.viewUpdateConfirm()
 	case phaseClone:
 		return m.viewClone()
 	case phaseClipboard:
@@ -1828,7 +1985,7 @@ func (m model) viewPushConfirm() string {
 	if m.repoName != "" {
 		question = m.repoName + "  " + question
 	}
-	b.WriteString("? " + question + "\n")
+	b.WriteString("  " + question + "\n")
 
 	yes := "  yes"
 	no := "  no"
@@ -1851,7 +2008,7 @@ func (m model) viewPRConfirm() string {
 	if m.repoName != "" {
 		question = m.repoName + "  " + question
 	}
-	b.WriteString("? " + question + "\n")
+	b.WriteString("  " + question + "\n")
 
 	yes := "  yes"
 	no := "  no"
@@ -1888,7 +2045,7 @@ func (m model) viewOutput() string {
 	if m.repoName != "" {
 		header = m.repoName + "  " + header
 	}
-	b.WriteString("? " + fitWidth(header, m.panelWidth()) + "\n\n")
+	b.WriteString("  " + fitWidth(header, m.panelWidth()) + "\n\n")
 
 	width := m.panelWidth()
 	lines := m.outputLines(width - 2)
@@ -1910,7 +2067,7 @@ func (m model) viewOutput() string {
 	}
 	b.WriteString(panelBottom(width) + "\n")
 
-	position := fmt.Sprintf("%d of %d", len(lines), end)
+	position := fmt.Sprintf("%d of %d", end, len(lines))
 	b.WriteString(styleInfo.Render("esc closes the output, arrows scroll (" + position + ")"))
 	return b.String()
 }
@@ -1923,7 +2080,7 @@ func (m model) viewClone() string {
 	if m.repoName != "" {
 		message = m.repoName + "  " + message
 	}
-	b.WriteString("? " + message + "\n")
+	b.WriteString("  " + message + "\n")
 	b.WriteString(pointer + " " + withCursor(m.cloneBuf, m.clonePos) + "\n")
 
 	// The command that will run is shown, so there is no doubt about
@@ -1950,7 +2107,7 @@ func (m model) viewClipboard() string {
 	if m.repoName != "" {
 		question = m.repoName + "  " + question
 	}
-	b.WriteString("? " + question + "\n")
+	b.WriteString("  " + question + "\n")
 	b.WriteString(pointer + " yes\n")
 	b.WriteString("  no\n")
 
@@ -1969,7 +2126,7 @@ func (m model) viewRemove() string {
 	if m.repoName != "" {
 		question = m.repoName + "  " + question
 	}
-	b.WriteString("? " + question + "\n")
+	b.WriteString("  " + question + "\n")
 	b.WriteString(pointer + " yes\n")
 	b.WriteString("  no\n")
 
@@ -2113,11 +2270,11 @@ func (m model) viewList() string {
 	if m.repoName != "" {
 		message = m.repoName + "  " + message
 	}
-	b.WriteString("? " + message + "\n")
+	b.WriteString("  " + message + "\n")
 
-	// The search line: the pointer, whatever has been typed, and the live
-	// readout of where the pointer sits.
-	b.WriteString(pointer + " " + m.query)
+	// The search line: whatever has been typed, and the live readout of
+	// where the pointer sits.
+	b.WriteString("  " + m.query)
 	b.WriteString(styleInfo.Render("  ["))
 	b.WriteString(styleInfo.Render(fmt.Sprintf("%d/%d", m.cursor+1, len(m.matches))))
 	b.WriteString(styleInfo.Render("]  sort: " + m.sortMode))
@@ -2175,7 +2332,17 @@ func (m model) viewList() string {
 	}
 
 	// The instructions.
-	b.WriteString(styleInfo.Render(instructionFor(m.width)))
+	//
+	// The hint is wrapped onto a second line rather than being cut short,
+	// so the list gives up a row to it.
+	hints := instructionLines(m.width)
+	for i, hint := range hints {
+		if i == len(hints)-1 {
+			b.WriteString(styleInfo.Render(hint))
+			break
+		}
+		b.WriteString(styleInfo.Render(hint) + "\n")
+	}
 	return b.String()
 }
 
@@ -2187,9 +2354,9 @@ func (m model) viewFiles() string {
 	if m.repoName != "" {
 		message = m.repoName + "  " + message
 	}
-	b.WriteString("? " + message + "\n")
+	b.WriteString("  " + message + "\n")
 
-	b.WriteString(pointer + " ")
+	b.WriteString("  ")
 	b.WriteString(styleInfo.Render("["))
 	b.WriteString(styleInfo.Render(fmt.Sprintf("%d/%d", m.fileCursor+1, len(m.files))))
 	b.WriteString(styleInfo.Render(fmt.Sprintf("]  %d selected", len(m.selectedPaths()))))
@@ -2241,11 +2408,16 @@ func (m model) viewMessage() string {
 	if m.repoName != "" {
 		message = m.repoName + "  " + message
 	}
-	b.WriteString("? " + message + "\n")
+	b.WriteString("  " + message + "\n")
+
+	hints := messageInstructionLines(m.width)
+	if m.historyIndex >= 0 {
+		hints = []string{fmt.Sprintf("ctrl+enter to commit, %d of %d saved messages", m.historyIndex+1, len(m.history))}
+	}
 
 	lines := messageLines(m.messageBuf)
 	place := caretPlace(m.messageBuf, m.messagePos)
-	rows := m.messageRows()
+	rows := m.messageRows(len(hints))
 	start := messageScroll(lines, place.line, rows)
 
 	for i := start; i < start+rows && i < len(lines); i++ {
@@ -2256,20 +2428,22 @@ func (m model) viewMessage() string {
 		b.WriteString(pointer + " " + text + "\n")
 	}
 
-	hint := messageInstructionFor(m.width)
-	if m.historyIndex >= 0 {
-		hint = fmt.Sprintf("ctrl+enter to commit, %d of %d saved messages", m.historyIndex+1, len(m.history))
+	for i, hint := range hints {
+		if i == len(hints)-1 {
+			b.WriteString(styleInfo.Render(hint))
+			break
+		}
+		b.WriteString(styleInfo.Render(hint) + "\n")
 	}
-	b.WriteString(styleInfo.Render(hint))
 	return b.String()
 }
 
 // messageRows is how many lines the message box may show.
 //
 // The box shares the screen with the heading and the hint, so the message
-// gets what is left of it.
-func (m model) messageRows() int {
-	rows := m.height - 2
+// gets what is left of it. The hint takes a row or two.
+func (m model) messageRows(hintRows int) int {
+	rows := m.height - 1 - hintRows
 	if rows < 1 {
 		rows = 1
 	}
@@ -2366,7 +2540,7 @@ func (m model) viewName() string {
 	if m.repoName != "" {
 		message = m.repoName + "  " + message
 	}
-	b.WriteString("? " + message + "\n")
+	b.WriteString("  " + message + "\n")
 	b.WriteString(pointer + " " + withCursor(m.nameBuf, m.namePos) + "\n")
 
 	width := m.width

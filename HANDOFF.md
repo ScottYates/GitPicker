@@ -7,7 +7,7 @@ This is what you need to work on git-picker without reading the whole source fro
 A single file Windows program that picks a git branch. It finds the
 repository, lists the local and remote branches in a fuzzy searchable menu,
 and switches to the one you pick and pulls it. It also commits, pushes, and
-clones.
+clones. It can update itself from the release page, with ctrl+u.
 
 It is written in Go with [bubbletea](https://github.com/charmbracelet/bubbletea)
 for the terminal interface and [lipgloss](https://github.com/charmbracelet/lipgloss)
@@ -29,6 +29,8 @@ Go side is free to draw whatever it likes.
 | `branch.go` | the branch list, and how it is labelled |
 | `fuzzy.go` | the fuzzy matching and its ranking |
 | `message.go` | the commit message as text, and where the caret is |
+| `help.go` | the panel with every key in it, and the help it shows |
+| `update.go` | the self update: the release page, the download, the swap |
 | `input.go` | the seam between the picker and the keyboard |
 | `input_windows.go` | the console reader, and the key map it uses |
 | `input_other.go` | the same, for the builds that let bubbletea read |
@@ -128,6 +130,12 @@ the name both arrive under.
 all (`tea.WithInput(nil)`), so the picker is the only thing reading the
 console. Two readers on one console would each steal the other's keys.
 
+**The console handle has to be a copy.** The reader opens the standard input
+of the process and closes it again when it is done. That handle belongs to
+the process, so closing it takes the process's own input with it, and
+anything started afterwards cannot inherit it. `openConsole` copies the
+handle with `DuplicateHandle` first, and it is the copy that is closed.
+
 **The virtual terminal input has to stay off.** With
 `ENABLE_VIRTUAL_TERMINAL_INPUT` the console throws the modifier keys away
 and with them the difference between enter and ctrl+enter. The mode is set
@@ -173,6 +181,18 @@ turn in `pendingAction` rather than racing it.
 **The exit code is git's.** A git failure the user asked for ends the picker
 with the code git gave, so a script can tell a failed pull from a failed
 push. A background fetch never does.
+
+**The console belongs to one program at a time.** The picker draws on the
+alternate screen, and the new build that takes over after an update needs
+that screen. So the picker quits, which puts the console back as it found
+it, and only then is the new build started, which waits for it in turn. The
+handover is done in `showPicker`, after `program.Run` has returned, not
+inside the model.
+
+**The pointer means one thing.** The arrow is only ever in front of the row
+that is picked, and in front of the choice that is pointed at when there is a
+question to answer. The header and the search line are indented by two
+spaces instead, so that they line up with the branches below them.
 
 ## Where it could go next
 

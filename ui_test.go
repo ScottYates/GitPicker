@@ -28,6 +28,10 @@ func keyMsg(name string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlP}
 	case "ctrl+n":
 		return tea.KeyMsg{Type: tea.KeyCtrlN}
+	case "ctrl+o":
+		return tea.KeyMsg{Type: tea.KeyCtrlO}
+	case "ctrl+u":
+		return tea.KeyMsg{Type: tea.KeyCtrlU}
 	case "ctrl+enter":
 		// Ctrl+Enter is the same byte as ctrl+j, which is the name
 		// bubbletea gives it.

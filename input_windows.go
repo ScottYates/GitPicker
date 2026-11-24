@@ -54,11 +54,16 @@ func openKeyboard() keyboard {
 // The standard input is used when it is a console, which is the usual
 // case. When it is not, the console is opened by its name, so the picker
 // still reads the keyboard when its input has been redirected.
+//
+// The handle is copied before it is used, because the standard input
+// belongs to the process and closing it would take the process's own input
+// with it. That matters when the picker hands the console over to a new
+// build of itself, because the new build needs the console as its input.
 func openConsole() (windows.Handle, error) {
 	if handle, err := coninput.NewStdinHandle(); err == nil {
 		var mode uint32
 		if windows.GetConsoleMode(handle, &mode) == nil {
-			return handle, nil
+			return duplicateHandle(handle)
 		}
 	}
 
@@ -74,6 +79,17 @@ func openConsole() (windows.Handle, error) {
 		0,
 		0,
 	)
+}
+
+// duplicateHandle makes a copy of a handle.
+func duplicateHandle(handle windows.Handle) (windows.Handle, error) {
+	process := windows.CurrentProcess()
+	var copy windows.Handle
+	err := windows.DuplicateHandle(process, handle, process, &copy, 0, false, windows.DUPLICATE_SAME_ACCESS)
+	if err != nil {
+		return 0, err
+	}
+	return copy, nil
 }
 
 // prepareConsole puts the console into the mode the picker reads it in.
@@ -104,6 +120,21 @@ func prepareConsole(handle windows.Handle) (uint32, error) {
 		return 0, err
 	}
 	return original, nil
+}
+
+// flushConsoleInput throws away the keys that are waiting to be read.
+//
+// The picker reads the console itself, and the input buffer belongs to the
+// console rather than to the program, so anything left in it would be read
+// by whatever runs next. That matters when the picker hands the console over
+// to a new build of itself.
+func flushConsoleInput() {
+	handle, err := openConsole()
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(handle)
+	coninput.FlushConsoleInputBuffer(handle)
 }
 
 // consoleReader reads the console and hands the keys to the picker.

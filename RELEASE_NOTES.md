@@ -1,43 +1,58 @@
-## git-picker v1.9
+## git-picker v1.10
 
-The mouse can select the text on screen, and the characters the picker draws
-are drawn properly.
+The picker can update itself, the keys it understands are written down in a
+panel, and the hint at the bottom no longer changes before it has to.
 
-### The mouse can select the text
+### The picker can update itself
 
-The picker used to turn the console's quick edit mode off, which is what a
-program that reads the keyboard has to do, and the mouse could not select
-anything in the window afterwards. Now the quick edit mode is on, so the
-text the picker shows, such as what git said or the error it hit, can be
-selected with the mouse and copied.
+Ctrl+U asks GitHub which build is the newest. If it is newer than the one
+that is running, it is fetched and put in place of the running one. The
+picker then asks whether the new build should be started, and hands the
+console over to it.
 
-The price is the one the classic console charges for it: a click in the
-window pastes the clipboard into the picker, so a click that was meant to
-be a click types whatever is on the clipboard. A drag to select does not
-do that, and the error panel now waits for escape instead of leaving on any
-key, so a stray click cannot close it while the error is being read.
+Windows will not let a running program be overwritten, so the old build is
+renamed out of the way and the new one takes its name. The old build is
+cleared away the next time the picker starts, when nothing is holding it
+open any more.
 
-### The characters are drawn properly
+The build that is fetched is the one published on the release page, so the
+picker and the releases stay in step. When there is nothing newer the status
+line says so and nothing is written to disk. When the picker is running a
+build that is newer than the published one, it says that too.
 
-The console reads what a program writes with the code page it is on, and
-that is usually one of the DOS code pages, where 437 is the common one. The
-bytes of a character outside ASCII were then read as two or three
-characters of that page, so the pointer in front of the selected branch
-came out as three pieces of rubbish.
+The update needs the network, and it fails quietly enough: the reason is
+shown in the status line and the picker carries on.
 
-The picker now puts the console on UTF-8 while it runs, and puts it back
-when it is done, so the console reads the characters as they are.
+### The keys are written down
 
-### The panels are drawn with line drawing characters
+The question mark opens a panel with every key there is and what it does.
+The panel scrolls when there is more of it than the screen can take.
 
-```
-┌─ will run ──────────────────────────────────────────────────────────────────
-│ git switch master                                                           
-│ git pull                                                                     
-```
+The question mark is only a key in the branch list. In the commit message
+it is ordinary text, as it always was.
 
-The pointer is the arrow of the console's own character set, so it is the
-same in every console font.
+### The hint at the bottom stays put
+
+The hint used to change to a shorter form as soon as the window was a little
+narrower than the whole of it, which was a long way before there was any
+need for it. It is now written on two lines, and only changes when the
+window is too narrow for both of them.
+
+The hint in the commit message box does the same.
+
+### What git said can be shown again
+
+Ctrl+O shows what git last said, or hides it while it is on screen. The text
+is kept after the panel has been closed, so it can be read again without
+running the command once more. The output still opens by itself after every
+git command, as it did before.
+
+### The pointer is only for the picked row
+
+The arrow was in front of the header and in front of the search box as well
+as in front of the picked branch, so the same mark meant three different
+things. It is now only in front of the row that is picked, and in front of
+the choice that is pointed at when there is a question to answer.
 
 ### Keys
 
@@ -51,6 +66,9 @@ same in every console font.
 | ctrl+c | commit: pick the files, then write the message |
 | ctrl+p | push the current branch |
 | ctrl+g | clone a repository into the current directory |
+| ctrl+o | show or hide what git last said |
+| ctrl+u | update to the newest build |
+| ? | the panel with every key in it |
 | enter | switch to the highlighted branch and pull |
 | y / n | answer the push question, and the pull request question |
 | esc | leave, or close the git output |

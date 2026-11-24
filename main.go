@@ -2,7 +2,7 @@ package main
 
 // git-picker: an interactive git branch picker that switches and pulls.
 //
-// Version: v1.9
+// Version: v1.10
 //
 // Finds the repository root, lists local and remote branches in a
 // fuzzy-selectable menu, switches to the chosen branch and pulls.
@@ -26,6 +26,11 @@ package main
 //
 // A spinner in the status line shows that git is working.
 //
+// The question mark opens a panel with every key there is. Ctrl+O shows or
+// hides what git last said. Ctrl+U fetches the newest build from the release
+// page and puts it in place of the one that is running, then asks whether it
+// should be started.
+//
 // Switching does not close the picker: the branch is switched, the list is
 // rebuilt and the picker carries on, so branches can be worked through one
 // after another. Escape leaves.
@@ -40,7 +45,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const version = "v1.9"
+const version = "v1.10"
 
 func main() {
 	os.Exit(mainExitCode(os.Args[1:], os.Stdout, os.Stderr))
@@ -84,6 +89,10 @@ func mainExitCode(args []string, stdout, stderr io.Writer) int {
 // ends with. The detail is written out as well, because the summary is only
 // the first line of what git said.
 func reportError(err error, stderr io.Writer) int {
+	if code, ok := err.(*exitError); ok {
+		return code.code
+	}
+
 	gitErr, ok := err.(*GitError)
 	if !ok {
 		fmt.Fprintf(stderr, "Error: %s\n", err)
@@ -178,6 +187,12 @@ func noRepositoryError() error {
 
 // showPicker runs the picker and reports how it ended.
 func showPicker(picker model) error {
+	// The build that was replaced by an update is cleared away now, because
+	// the picker that was running it has finished with its file.
+	if path, err := os.Executable(); err == nil {
+		removeOldBuild(path)
+	}
+
 	// The console reads what the picker writes with the code page it is
 	// on, and a DOS code page reads the line drawing characters as
 	// rubbish. The console is put on UTF-8 for as long as the picker
@@ -208,9 +223,32 @@ func showPicker(picker model) error {
 	if m.fatal != nil {
 		return m.fatal
 	}
+	// A new build was put in place and the user asked for it to be
+	// started. The picker has put the console back as it found it, so the
+	// new build can take it over.
+	if m.relaunch != "" {
+		code, err := relaunch(m.relaunch)
+		if err != nil {
+			return err
+		}
+		if code != 0 {
+			return &exitError{code: code}
+		}
+		return nil
+	}
 	// Escape leaves the picker, which is a normal ending rather than a
 	// cancellation, so it exits quietly.
 	return nil
+}
+
+// exitError is an exit code with nothing more to say about it.
+//
+// The new build that took over has already said whatever it had to say, so
+// nothing is written out again here.
+type exitError struct{ code int }
+
+func (e *exitError) Error() string {
+	return fmt.Sprintf("exit code %d", e.code)
 }
 
 // workingDir is the directory the picker was started in.

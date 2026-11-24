@@ -11,3 +11,10 @@ package main
 func openKeyboard() keyboard {
 	return keyboard{}
 }
+
+// flushConsoleInput throws away the keys that are waiting to be read.
+//
+// There is no console of its own on this build, so there is nothing to
+// flush.
+func flushConsoleInput() {
+}
