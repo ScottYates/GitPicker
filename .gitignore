@@ -1,12 +1,6 @@
 # The built binary is attached to the release, not committed. It is
 # reproducible from the source with: go build -ldflags "-s -w" -o git-picker.exe .
 
-git-picker.exe
-git-picker
-
-# The binary that a plain "go build" leaves behind, named after the module.
-gitpicker.exe
-
 # Python bytecode from the reference implementation.
 __pycache__/
 *.py[cod]
